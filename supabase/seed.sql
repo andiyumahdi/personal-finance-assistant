@@ -1,0 +1,5 @@
+-- Placeholder seed file.
+-- No seed data yet. Seed data should only be added once the schema
+-- migrations (see migrations/) are in place, and should remain safe
+-- to run against a fresh local/dev database only - never against
+-- production data.

@@ -1,0 +1,6 @@
+{
+  "watch": ["src"],
+  "ext": "js,json",
+  "ignore": ["auth_state/*"],
+  "exec": "node src/index.js"
+}

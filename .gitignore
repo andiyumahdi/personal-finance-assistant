@@ -1,0 +1,11 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Root-level catch-all (backend/ and frontend/ have their own, more specific
+# .gitignore files - this covers anything at the repo root only)
+*.log
