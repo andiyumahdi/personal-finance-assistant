@@ -11,3 +11,6 @@ Thumbs.db
 *.log
 
 node_modules/
+# Supabase CLI local state (created by `supabase link` / `supabase migration new`)
+supabase/.temp/
+supabase/.branches/

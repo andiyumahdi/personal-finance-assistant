@@ -17,9 +17,20 @@ supabase db push
 ## Structure
 
 ```
-migrations/   # Timestamped migration files (empty for now - schema not yet created)
+migrations/   # Timestamped migration files
 seed.sql      # Optional local/dev seed data (placeholder, unused for now)
 ```
+
+## Current status
+
+`20260709122541_init_schema.sql` — extensions (`pgcrypto`), all 5 tables,
+constraints, and indices per `../docs/SPECIFICATION.md` section 3.
+
+**Deliberately not included yet:** Row-Level Security policies. The
+authorization strategy (NextAuth session vs native Supabase Auth /
+`auth.uid()`) has not been decided yet and is deferred to Phase 3. Until RLS
+is added, these tables must only be accessed via the `service_role` key from
+trusted server-side code — never via the `anon` key from a browser client.
 
 ## Why this matters
 
