@@ -72,7 +72,7 @@ describe('transactions query layer', () => {
       source_message_id: `TEST-MSG-${Date.now()}`,
     });
     assert.ok(tx.id);
-    assert.equal(tx.amount, '25000'); // numeric columns come back as strings from postgres
+    assert.equal(tx.amount, 25000);
     createdTransactionId = tx.id;
   });
 
@@ -182,7 +182,7 @@ describe('goals query layer', () => {
 
   test('updateGoalById updates current_saved', async () => {
     const updated = await goalQueries.updateGoalById(goalId, { current_saved: 1700000 });
-    assert.equal(updated.current_saved, '1700000');
+    assert.equal(updated.current_saved, 1700000);
   });
 
   test('listGoals returns the created goal', async () => {
