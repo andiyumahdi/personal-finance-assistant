@@ -16,14 +16,16 @@ import 'dotenv/config';
 import { aiProvider, validateExtractionResult } from '../../src/ai/aiProvider.js';
 import { resetCircuitState } from '../../src/ai/geminiClient.js';
 
-// The Gemini free tier is rate-limited to as few as 5 requests/minute
-// depending on model and plan (see https://ai.google.dev/gemini-api/docs/rate-limits).
-// Without pacing, this suite blows through that limit in the first couple
-// of test cases, which then trips our OWN circuit breaker (geminiClient.js)
-// and makes every subsequent test fail near-instantly with a misleading
-// "circuit open" error rather than a real result. Same principle as
-// SPECIFICATION.md section 11.7 (stagger scheduled recaps) - applies here too.
-const REQUEST_SPACING_MS = 13_000;
+// The Gemini free tier is rate-limited per model (varies - as of mid-2026,
+// gemini-3.1-flash-lite allows ~15 requests/minute). Without pacing, this
+// suite blows through that limit in the first few test cases, which then
+// trips our OWN circuit breaker (geminiClient.js) and makes every
+// subsequent test fail near-instantly with a misleading "circuit open"
+// error rather than a real result. Same principle as SPECIFICATION.md
+// section 11.7 (stagger scheduled recaps) - applies here too. If this still
+// hits 429s, increase this value - the current default model's RPM limit
+// may have changed (check https://ai.google.dev/gemini-api/docs/rate-limits).
+const REQUEST_SPACING_MS = 5_000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

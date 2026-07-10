@@ -65,7 +65,7 @@ export const aiProvider = {
    */
   async extract(rawText, context = null) {
     const prompt = buildExtractionPrompt(rawText, context);
-    const model = process.env.GEMINI_MODEL_EXTRACTION || 'gemini-2.5-flash';
+    const model = process.env.GEMINI_MODEL_EXTRACTION || 'gemini-3.1-flash-lite';
 
     let lastReason = 'unknown';
 
@@ -96,7 +96,7 @@ export const aiProvider = {
 
   async generateReply(intent, data) {
     const prompt = buildPersonaPrompt(intent, data);
-    const model = process.env.GEMINI_MODEL_PERSONA || 'gemini-2.5-flash';
+    const model = process.env.GEMINI_MODEL_PERSONA || 'gemini-3.1-flash-lite';
 
     const text = await callGemini(prompt, {
       model,
