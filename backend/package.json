@@ -9,7 +9,10 @@
     "start": "node src/index.js",
     "dev": "nodemon",
     "lint": "eslint src",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:unit": "node --test test/unit/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js",
+    "test": "npm run test:unit"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",

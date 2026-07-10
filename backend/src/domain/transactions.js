@@ -1,15 +1,24 @@
-// Transaction domain logic. Order of operations matters:
-// extract -> WRITE TO DB -> confirm to user. Never confirm before the
-// write succeeds. See docs/SPECIFICATION.md section 11.2.
+// Transaction domain logic. Order of operations matters: extract -> WRITE TO
+// DB -> confirm to user (caller's responsibility to not confirm before this
+// resolves). See SPECIFICATION.md section 11.2.
+//
+// No direct `supabase.from(...)` calls here - all DB access goes through
+// db/queries/transactions.js.
+
+import * as transactionQueries from '../db/queries/transactions.js';
 
 export async function createTransaction(data) {
-  // TODO: insert into transactions table, return the created row
+  return transactionQueries.insertTransaction(data);
 }
 
 export async function updateTransaction(id, changes) {
-  // TODO: update amount/category/type
+  return transactionQueries.updateTransactionById(id, changes);
 }
 
 export async function softDeleteTransaction(id) {
-  // TODO: set deleted_at = now(), never hard delete
+  return transactionQueries.softDeleteTransactionById(id);
+}
+
+export async function listTransactionsForUser(userId, filters = {}) {
+  return transactionQueries.listTransactions(userId, filters);
 }
