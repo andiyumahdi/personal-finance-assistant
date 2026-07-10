@@ -10,10 +10,29 @@
 // Re-run this whenever extractionPrompt.js changes, to catch regressions
 // before they reach real users.
 
-import { test, describe } from 'node:test';
+import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import 'dotenv/config';
 import { aiProvider, validateExtractionResult } from '../../src/ai/aiProvider.js';
+import { resetCircuitState } from '../../src/ai/geminiClient.js';
+
+// The Gemini free tier is rate-limited to as few as 5 requests/minute
+// depending on model and plan (see https://ai.google.dev/gemini-api/docs/rate-limits).
+// Without pacing, this suite blows through that limit in the first couple
+// of test cases, which then trips our OWN circuit breaker (geminiClient.js)
+// and makes every subsequent test fail near-instantly with a misleading
+// "circuit open" error rather than a real result. Same principle as
+// SPECIFICATION.md section 11.7 (stagger scheduled recaps) - applies here too.
+const REQUEST_SPACING_MS = 13_000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+before(() => {
+  // In case a previous run in the same process left the circuit open.
+  resetCircuitState();
+});
 
 const cases = [
   {
@@ -87,6 +106,7 @@ const contextCases = [
 describe('extraction golden set - plain transactions', () => {
   for (const { input, expect } of cases) {
     test(`"${input}"`, async () => {
+      await sleep(REQUEST_SPACING_MS);
       const result = await aiProvider.extract(input);
 
       assert.equal(validateExtractionResult(result).valid, true, 'result must pass schema validation');
@@ -109,6 +129,7 @@ describe('extraction golden set - plain transactions', () => {
 describe('extraction golden set - ambiguous direction (should not guess)', () => {
   for (const { input } of ambiguousCases) {
     test(`"${input}" - flags low confidence or unknown type instead of guessing`, async () => {
+      await sleep(REQUEST_SPACING_MS);
       const result = await aiProvider.extract(input);
       assert.equal(validateExtractionResult(result).valid, true);
 
@@ -125,6 +146,7 @@ describe('extraction golden set - ambiguous direction (should not guess)', () =>
 describe('extraction golden set - continuation and correction', () => {
   for (const { input, context, expect } of contextCases) {
     test(`"${input}" with prior transaction context`, async () => {
+      await sleep(REQUEST_SPACING_MS);
       const result = await aiProvider.extract(input, context);
       assert.equal(validateExtractionResult(result).valid, true);
 
