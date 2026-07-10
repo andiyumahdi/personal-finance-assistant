@@ -11,13 +11,14 @@
     "lint": "eslint src",
     "format": "prettier --write .",
     "test:unit": "node --test test/unit/*.test.js",
-    "test:integration": "node --test test/integration/*.test.js",
+    "test:integration": "node --test test/integration/queries.test.js",
+    "test:golden": "node --test test/integration/aiExtraction.test.js",
     "test": "npm run test:unit"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
     "@supabase/supabase-js": "^2.45.4",
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^2.11.0",
     "node-cron": "^3.0.3",
     "dotenv": "^16.4.5"
   },
