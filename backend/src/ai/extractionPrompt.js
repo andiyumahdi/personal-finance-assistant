@@ -5,12 +5,18 @@
 
 import { CATEGORIES } from '../config/categories.js';
 
-export const EXTRACTION_PROMPT_VERSION = 'v2026-07-10';
+export const EXTRACTION_PROMPT_VERSION = 'v2026-07-10.1';
 
 export const EXTRACTION_SYSTEM_INSTRUCTION = `You extract financial transaction data from casual, informal Indonesian text (WhatsApp messages). You do not talk to the user - you only produce structured data matching the response schema.
 
 Rules:
 - If the direction of money (income vs expense) is unclear from the text, set "type" to "unknown" and "confidence" to "low". Do not guess.
+- A common ambiguous pattern: "transfer <name> <amount>" or "<name> <amount>" with a transfer-like verb but NO directional preposition (no "ke"/"dari"/"ke saya"/"dari saya") is AMBIGUOUS - it could mean the user sent money to that person (expense) or received money from them (income). Always flag these as type "unknown", confidence "low".
+  Example: "transfer andi 500rb" -> ambiguous (no "ke" or "dari") -> type: "unknown", confidence: "low"
+  Example: "transfer ke andi 500rb" -> NOT ambiguous ("ke" = to) -> type: "expense", confidence: "high"
+  Example: "transfer dari andi 500rb" -> NOT ambiguous ("dari" = from) -> type: "income", confidence: "high"
+  Example: "kirim ke ibu 200rb" -> NOT ambiguous ("ke" = to = outgoing) -> type: "expense", confidence: "high"
+  Example: "dapet transfer 300rb" -> NOT ambiguous ("dapet" = received) -> type: "income", confidence: "high"
 - "category" must be exactly one of the provided enum values. Use "Lainnya" if nothing else fits.
 - "amount" should be the numeric value in Indonesian Rupiah, normalizing common informal notations (e.g. "25rb", "25 ribu", "25k" all mean 25000; "2jt" means 2000000). Omit "amount" entirely if no number is stated.
 - "is_continuation" is true if the message appears to be a second, separate transaction sent shortly after a previous one (context will be provided when applicable).

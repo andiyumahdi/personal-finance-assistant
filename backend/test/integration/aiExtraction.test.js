@@ -77,13 +77,24 @@ const cases = [
     input: 'parkir 2rb',
     expect: { type: 'expense', amount: 2000, category: 'Transport' },
   },
+  {
+    // "kirim ke" has an explicit directional preposition ("ke" = to) -
+    // this is NOT ambiguous, unlike the bare "transfer <name> <amount>"
+    // pattern below. Originally miscategorized as an ambiguous case in
+    // this golden set - moved here after the model correctly classified
+    // it as expense and the test's own expectation turned out to be wrong.
+    input: 'kirim ke ibu 200rb',
+    expect: { type: 'expense', amount: 200000 },
+  },
 ];
 
 // Ambiguous direction (SPECIFICATION.md section 2.6) - the model should
-// flag low confidence / unknown type rather than guess.
+// flag low confidence / unknown type rather than guess. Both cases below
+// follow the same pattern explicitly called out in extractionPrompt.js:
+// "transfer <name> <amount>" with NO directional preposition ("ke"/"dari").
 const ambiguousCases = [
   { input: 'transfer andi 500rb' },
-  { input: 'kirim ke ibu 200rb' },
+  { input: 'transfer rina 200rb' },
 ];
 
 // Continuation / correction (SPECIFICATION.md section 2.3, 2.4) - requires
