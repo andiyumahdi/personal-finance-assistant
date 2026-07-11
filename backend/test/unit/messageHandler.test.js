@@ -4,6 +4,8 @@ import {
   detectIntent,
   parseDirectionReply,
   parseAmount,
+  resolveAmbiguousExtraction,
+  STATES,
 } from '../../src/whatsapp/messageHandler.js';
 
 describe('detectIntent (pure, no LLM call)', () => {
@@ -56,5 +58,51 @@ describe('parseAmount (pure, no LLM call)', () => {
 
   test('returns null when no number is present', () => {
     assert.equal(parseAmount('nggak tau'), null);
+  });
+});
+
+describe('resolveAmbiguousExtraction (pure, no LLM/DB call)', () => {
+  test('asks about direction when an amount WAS detected (real ambiguity, section 2.6)', () => {
+    const extraction = {
+      type: 'unknown',
+      confidence: 'low',
+      amount: 500000,
+      category: 'Transfer',
+      description: 'transfer andi',
+      is_continuation: false,
+      is_correction: false,
+    };
+    const result = resolveAmbiguousExtraction(extraction);
+    assert.equal(result.newState, STATES.AWAITING_DIRECTION);
+    assert.match(result.reply, /masuk atau uang keluar/);
+    assert.deepEqual(result.newStateContext, { pendingExtraction: extraction });
+  });
+
+  test('does NOT ask about direction when no amount was detected at all', () => {
+    const extraction = {
+      type: 'unknown',
+      confidence: 'low',
+      category: 'Lainnya',
+      description: 'perubahan tanggal',
+      is_continuation: false,
+      is_correction: true,
+    };
+    const result = resolveAmbiguousExtraction(extraction);
+    assert.equal(result.newState, STATES.IDLE);
+    assert.doesNotMatch(result.reply, /masuk atau uang keluar/);
+  });
+
+  test('treats amount = null the same as amount omitted', () => {
+    const extraction = {
+      type: 'unknown',
+      confidence: 'low',
+      amount: null,
+      category: 'Lainnya',
+      description: 'unclear',
+      is_continuation: false,
+      is_correction: false,
+    };
+    const result = resolveAmbiguousExtraction(extraction);
+    assert.equal(result.newState, STATES.IDLE);
   });
 });

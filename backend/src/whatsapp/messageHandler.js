@@ -98,6 +98,38 @@ async function handleRecap(user, trace) {
   return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
 }
 
+/**
+ * Decides how to respond when extraction comes back unknown/low-confidence.
+ * Pure - no I/O - so this branching logic is directly unit-testable without
+ * mocking Gemini or the database.
+ */
+export function resolveAmbiguousExtraction(extraction) {
+  const hasAmount = extraction.amount !== undefined && extraction.amount !== null;
+
+  if (hasAmount) {
+    // A number was mentioned but the direction genuinely isn't clear
+    // (e.g. "transfer andi 500rb") - the real ambiguous-direction case
+    // from SPECIFICATION.md section 2.6.
+    return {
+      reply: 'Ini uang masuk atau uang keluar?',
+      newState: STATES.AWAITING_DIRECTION,
+      newStateContext: { pendingExtraction: extraction },
+    };
+  }
+
+  // No amount detected at all - this doesn't look like a transaction
+  // message in the first place. Forcing it into "masuk atau keluar?" is
+  // actively confusing here, and editing an existing record via chat isn't
+  // in scope (that's a dashboard action - SPECIFICATION.md section 4.4).
+  // Stay in IDLE and ask for clarification instead of guessing.
+  return {
+    reply:
+      'Hmm, aku kurang paham maksudnya nih. Kalau mau nyatet transaksi, coba sebutin nominalnya ya (misal "jajan 20rb").',
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
 async function handleIdle(user, rawText, trace) {
   const intent = detectIntent(rawText);
   trace.intent = intent;
@@ -128,11 +160,7 @@ async function handleIdle(user, rawText, trace) {
   trace.extraction = extraction;
 
   if (extraction.type === 'unknown' || extraction.confidence === 'low') {
-    return {
-      reply: 'Ini uang masuk atau uang keluar?',
-      newState: STATES.AWAITING_DIRECTION,
-      newStateContext: { pendingExtraction: extraction },
-    };
+    return resolveAmbiguousExtraction(extraction);
   }
 
   if (extraction.is_correction && lastTransaction) {
