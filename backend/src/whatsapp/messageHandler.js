@@ -19,6 +19,7 @@
 
 import * as userQueries from '../db/queries/users.js';
 import * as transactionQueries from '../db/queries/transactions.js';
+import * as messageLogQueries from '../db/queries/messageLog.js';
 import { aiProvider } from '../ai/aiProvider.js';
 import * as transactionsDomain from '../domain/transactions.js';
 import * as goalsDomain from '../domain/goals.js';
@@ -299,38 +300,65 @@ async function handleAwaitingGoalDeadline(user, rawText, trace) {
  * WhatsApp webhook call. Returns a full trace object (used for verbose
  * debugging output) - `trace.reply` is the only field a real WhatsApp
  * integration would actually need to send back.
+ *
+ * waMessageId: optional. When provided (always the case from the real
+ * WhatsApp webhook - Phase E), this enables the idempotency guard
+ * (SPECIFICATION.md section 12.2): if this exact WhatsApp message was
+ * already processed, the pipeline is skipped entirely and no duplicate
+ * reply/DB write happens. Phase D's local CLI scripts don't have a real
+ * wa_message_id and simply omit this argument - dedupe is skipped, which
+ * is correct for one-off local testing.
+ *
+ * All processing for a given phoneNumber is serialized via withUserLock
+ * (per-user only, never global - SPECIFICATION.md section 12.2), so two
+ * messages arriving close together for the same user can't race each
+ * other's DB reads/writes.
  */
-export async function handleIncomingMessage(phoneNumber, rawText) {
-  const trace = { input: rawText, phoneNumber };
+export async function handleIncomingMessage(phoneNumber, rawText, waMessageId = null) {
+  return contextDomain.withUserLock(phoneNumber, async () => {
+    const trace = { input: rawText, phoneNumber };
 
-  const user = await getOrCreateUser(phoneNumber);
-  trace.user = user;
-  trace.stateBefore = user.state;
+    if (waMessageId) {
+      const alreadyProcessed = await messageLogQueries.hasProcessedMessage(waMessageId);
+      if (alreadyProcessed) {
+        trace.skipped = 'duplicate_message';
+        return trace;
+      }
+    }
 
-  let result;
-  switch (user.state) {
-    case STATES.AWAITING_DIRECTION:
-      result = await handleAwaitingDirection(user, rawText, trace);
-      break;
-    case STATES.AWAITING_GOAL_TARGET:
-      result = await handleAwaitingGoalTarget(user, rawText, trace);
-      break;
-    case STATES.AWAITING_GOAL_DEADLINE:
-      result = await handleAwaitingGoalDeadline(user, rawText, trace);
-      break;
-    case STATES.IDLE:
-    default:
-      result = await handleIdle(user, rawText, trace);
-      break;
-  }
+    const user = await getOrCreateUser(phoneNumber);
+    trace.user = user;
+    trace.stateBefore = user.state;
 
-  trace.stateAfter = result.newState;
-  trace.reply = result.reply;
+    let result;
+    switch (user.state) {
+      case STATES.AWAITING_DIRECTION:
+        result = await handleAwaitingDirection(user, rawText, trace);
+        break;
+      case STATES.AWAITING_GOAL_TARGET:
+        result = await handleAwaitingGoalTarget(user, rawText, trace);
+        break;
+      case STATES.AWAITING_GOAL_DEADLINE:
+        result = await handleAwaitingGoalDeadline(user, rawText, trace);
+        break;
+      case STATES.IDLE:
+      default:
+        result = await handleIdle(user, rawText, trace);
+        break;
+    }
 
-  await userQueries.updateUserById(user.id, {
-    state: result.newState,
-    state_context: result.newStateContext || {},
+    trace.stateAfter = result.newState;
+    trace.reply = result.reply;
+
+    await userQueries.updateUserById(user.id, {
+      state: result.newState,
+      state_context: result.newStateContext || {},
+    });
+
+    if (waMessageId) {
+      await messageLogQueries.recordProcessedMessage(user.id, waMessageId);
+    }
+
+    return trace;
   });
-
-  return trace;
 }

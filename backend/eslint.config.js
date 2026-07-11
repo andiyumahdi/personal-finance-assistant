@@ -11,6 +11,8 @@ export default [
         console: 'readonly',
         setTimeout: 'readonly',
         URL: 'readonly',
+        fetch: 'readonly',
+        Buffer: 'readonly',
       },
     },
     rules: {

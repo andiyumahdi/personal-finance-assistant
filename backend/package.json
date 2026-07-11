@@ -19,15 +19,16 @@
     "persona": "node scripts/testPersona.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.9",
-    "@supabase/supabase-js": "^2.45.4",
     "@google/genai": "^2.11.0",
-    "node-cron": "^3.0.3",
-    "dotenv": "^16.4.5"
+    "@supabase/supabase-js": "^2.45.4",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "node-cron": "^3.0.3"
   },
   "devDependencies": {
     "eslint": "^9.9.1",
-    "prettier": "^3.3.3",
-    "nodemon": "^3.1.4"
+    "nodemon": "^3.1.4",
+    "prettier": "^3.3.3"
   }
 }
