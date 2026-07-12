@@ -29,10 +29,10 @@ layer on top of it, not a replacement.
 
 ```
 finance-assistant/
-├── backend/     # Node.js: Baileys (WhatsApp), Gemini AI layers, domain logic, scheduler
+├── backend/     # Node.js: WhatsApp Cloud API webhook, Gemini AI layers, domain logic
 ├── frontend/    # Next.js (App Router): dashboard UI
 ├── supabase/    # Database migrations and seed data
-├── docs/        # Frozen specification, architecture index, operations runbook, setup guide
+├── docs/        # Specification, roadmap, architecture index, operations runbook, setup guides
 ├── .gitignore
 ├── README.md
 └── LICENSE
@@ -42,13 +42,13 @@ finance-assistant/
 
 | Layer | Technology |
 |---|---|
-| Backend | Node.js (JavaScript) |
-| WhatsApp gateway | Baileys |
+| Backend | Node.js (JavaScript), Express |
+| WhatsApp gateway | WhatsApp Cloud API (Meta) - webhook-based, see `docs/whatsapp-cloud-api-setup.md` |
 | AI | Gemini API (free tier) |
 | Database | Supabase (PostgreSQL, free tier) |
 | Frontend | Next.js (App Router, TypeScript) |
 | Auth | Google OAuth (NextAuth), linked to WhatsApp phone number |
-| Backend hosting | Linux VM (Oracle Cloud Always Free, primary; see `docs/SPECIFICATION.md` §8 for the fallback tiers) |
+| Backend hosting | Render (free tier) - see `docs/whatsapp-cloud-api-setup.md` §Deployment |
 | Frontend hosting | Vercel |
 
 ## Running the backend
@@ -72,17 +72,19 @@ npm run dev
 ```
 
 See [`docs/SETUP.md`](./docs/SETUP.md) for the complete local development
-setup, and [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) for the
-operational runbook (health monitoring, error handling, backups, secrets
-rotation).
+setup, [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) for the operational
+runbook (health monitoring, error handling, backups, secrets rotation),
+and [`docs/whatsapp-cloud-api-setup.md`](./docs/whatsapp-cloud-api-setup.md)
+for WhatsApp Cloud API account setup.
 
 ## Status
 
-**Bootstrap stage.** No business logic is implemented yet. Every source
-file contains `// TODO` markers pointing to the relevant section of
-`docs/SPECIFICATION.md`. Implementation proceeds phase-by-phase per the
-roadmap in `docs/SPECIFICATION.md` section 10, starting with Phase 0
-(backend VM provisioning + a stable, persistent Baileys connection).
+**Phases A-E implemented** (database, domain layer, AI layer, message
+pipeline, WhatsApp Cloud API webhook) - see
+[`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full phase breakdown and
+current exit-criteria status. Post-MVP improvements (account/wallet
+management, dashboard polish, etc.) are intentionally deferred - see the
+Post-MVP Backlog section at the end of `docs/ROADMAP.md`.
 
 ## License
 
