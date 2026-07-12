@@ -165,8 +165,16 @@ async function handleIdle(user, rawText, trace) {
   }
 
   if (extraction.is_correction && lastTransaction) {
+    // Guard: an explicit null amount in a correction would try to null out
+    // an existing NOT NULL column on update. Keep the existing amount
+    // instead of blanking it if the model didn't actually give a new one.
+    const correctionAmount =
+      typeof extraction.amount === 'number' && !Number.isNaN(extraction.amount)
+        ? extraction.amount
+        : lastTransaction.amount;
+
     const updated = await transactionsDomain.updateTransaction(lastTransaction.id, {
-      amount: extraction.amount,
+      amount: correctionAmount,
       category: extraction.category,
       raw_text: rawText,
       confidence: extraction.confidence,
@@ -183,6 +191,20 @@ async function handleIdle(user, rawText, trace) {
     trace.persona = persona;
 
     return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // Guard: same missing-amount risk as handleAwaitingDirection below, but
+  // here the message reached this point with a confident, non-ambiguous
+  // type - just genuinely no number stated (e.g. "bayar netflix"). Rather
+  // than crash on the NOT NULL constraint, ask for the amount explicitly.
+  const hasValidExtractionAmount =
+    typeof extraction.amount === 'number' && !Number.isNaN(extraction.amount);
+  if (!hasValidExtractionAmount) {
+    return {
+      reply: `Oke, ${extraction.description || 'ini'} berapa ya nominalnya?`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
   }
 
   const created = await transactionsDomain.createTransaction({
@@ -222,6 +244,24 @@ async function handleAwaitingDirection(user, rawText, trace) {
   }
 
   const pending = user.state_context?.pendingExtraction || {};
+
+  // Defensive guard: without a valid amount, inserting would violate the
+  // transactions.amount NOT NULL constraint and crash BEFORE the state
+  // update below runs - which would leave the user permanently stuck in
+  // AWAITING_DIRECTION (every future message re-triggers the same crash).
+  // Found via real WhatsApp testing, not caught by local pipeline testing.
+  // Fail gracefully instead: ask the user to resend, and reset to IDLE so
+  // they aren't stuck.
+  const hasValidAmount = typeof pending.amount === 'number' && !Number.isNaN(pending.amount);
+  if (!hasValidAmount) {
+    trace.error = 'missing_amount_in_pending_extraction';
+    return {
+      reply: 'Waduh, kayaknya nominalnya kelewat kecatet. Coba kirim ulang transaksinya ya (misal "jajan 15rb").',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
   const created = await transactionsDomain.createTransaction({
     user_id: user.id,
     type: direction,
