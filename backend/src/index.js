@@ -18,6 +18,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { handleWebhookVerification, handleWebhookMessage } from './whatsapp/webhook.js';
+import { PRIVACY_POLICY_HTML } from './utils/privacyPolicy.js';
 import { logger } from './utils/logger.js';
 
 const app = express();
@@ -59,6 +60,13 @@ app.get('/healthz', (req, res) => {
     status: 'ok',
     lastSuccessfulMessageAt,
   });
+});
+
+// Required by Meta before the App can be published - see
+// docs/whatsapp-cloud-api-setup.md. Set this exact URL as the
+// "Privacy policy URL" in App Settings > Basic.
+app.get('/privacy-policy', (req, res) => {
+  res.type('html').send(PRIVACY_POLICY_HTML);
 });
 
 function main() {
