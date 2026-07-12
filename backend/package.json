@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon",
-    "lint": "eslint src",
+    "lint": "eslint src eval scripts",
     "format": "prettier --write .",
     "test:unit": "node --test test/unit/*.test.js",
     "test:integration": "node --test test/integration/queries.test.js",
@@ -16,7 +16,8 @@
     "test": "npm run test:unit",
     "pipeline": "node scripts/testPipeline.js",
     "extraction": "node scripts/testExtraction.js",
-    "persona": "node scripts/testPersona.js"
+    "persona": "node scripts/testPersona.js",
+    "eval": "node scripts/runEval.js"
   },
   "dependencies": {
     "@google/genai": "^2.11.0",

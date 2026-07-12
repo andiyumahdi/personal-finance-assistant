@@ -1,0 +1,52 @@
+[
+  { "id": "exp_001", "input": "jajan mixue 25rb", "tags": ["plain_expense"], "expect": { "type": "expense", "amount": 25000, "acceptableCategories": ["Makanan & Minuman"] } },
+  { "id": "exp_002", "input": "isi bensin 50rb", "tags": ["plain_expense"], "expect": { "type": "expense", "amount": 50000, "acceptableCategories": ["Transport"] } },
+  { "id": "exp_003", "input": "bayar kost 1.5jt", "tags": ["plain_expense"], "expect": { "type": "expense", "amount": 1500000 } },
+  { "id": "exp_004", "input": "beli kopi 18k", "tags": ["plain_expense"], "expect": { "type": "expense", "amount": 18000, "acceptableCategories": ["Makanan & Minuman"] } },
+  { "id": "exp_005", "input": "parkir 2rb", "tags": ["plain_expense"], "expect": { "type": "expense", "amount": 2000, "acceptableCategories": ["Transport"] } },
+  { "id": "exp_006", "input": "makan siang 35rb", "tags": ["plain_expense"], "expect": { "type": "expense", "amount": 35000, "acceptableCategories": ["Makanan & Minuman"] } },
+
+  { "id": "inc_001", "input": "gaji bulan ini 5 juta", "tags": ["plain_income"], "expect": { "type": "income", "amount": 5000000, "acceptableCategories": ["Gaji"] } },
+  { "id": "inc_002", "input": "dapet uang jajan dari mama 100rb", "tags": ["plain_income"], "expect": { "type": "income", "amount": 100000 } },
+  { "id": "inc_003", "input": "dapet bonus 750rb", "tags": ["plain_income"], "expect": { "type": "income", "amount": 750000 } },
+  { "id": "inc_004", "input": "jual barang bekas 150rb", "tags": ["plain_income"], "expect": { "type": "income", "amount": 150000 } },
+
+  { "id": "amb_001", "input": "transfer andi 500rb", "tags": ["ambiguous_direction"], "expect": { "typeOneOf": ["unknown"], "confidenceOneOf": ["low"], "amountPresent": true } },
+  { "id": "amb_002", "input": "transfer rina 200rb", "tags": ["ambiguous_direction"], "expect": { "typeOneOf": ["unknown"], "confidenceOneOf": ["low"], "amountPresent": true } },
+  { "id": "amb_003", "input": "budi 300rb", "tags": ["ambiguous_direction"], "expect": { "typeOneOf": ["unknown"], "confidenceOneOf": ["low"], "amountPresent": true } },
+  { "id": "amb_004", "input": "sama dika 100rb", "tags": ["ambiguous_direction"], "expect": { "typeOneOf": ["unknown"], "confidenceOneOf": ["low"], "amountPresent": true } },
+
+  { "id": "cont_001", "input": "sama parkir 5rb", "tags": ["continuation"], "context": { "lastTransaction": { "type": "expense", "amount": 20000, "category": "Makanan & Minuman" } }, "expect": { "is_continuation": true, "amountPresent": true } },
+  { "id": "cont_002", "input": "terus beli air mineral 5rb", "tags": ["continuation"], "context": { "lastTransaction": { "type": "expense", "amount": 15000, "category": "Makanan & Minuman" } }, "expect": { "is_continuation": true, "amountPresent": true } },
+  { "id": "cont_003", "input": "abis itu bayar tol 10rb", "tags": ["continuation"], "context": { "lastTransaction": { "type": "expense", "amount": 50000, "category": "Transport" } }, "expect": { "is_continuation": true, "amountPresent": true } },
+
+  { "id": "corr_001", "input": "eh salah, yang tadi 15rb", "tags": ["correction"], "context": { "lastTransaction": { "type": "expense", "amount": 25000, "category": "Makanan & Minuman" } }, "expect": { "is_correction": true } },
+  { "id": "corr_002", "input": "bukan segitu, harusnya 30rb", "tags": ["correction"], "context": { "lastTransaction": { "type": "expense", "amount": 50000, "category": "Transport" } }, "expect": { "is_correction": true } },
+  { "id": "corr_003", "input": "typo tadi, harusnya 45rb bukan 4.5rb", "tags": ["correction"], "context": { "lastTransaction": { "type": "expense", "amount": 4500, "category": "Makanan & Minuman" } }, "expect": { "is_correction": true } },
+
+  { "id": "noamt_001", "input": "bayar netflix", "tags": ["no_amount_stated"], "expect": { "type": "expense", "amountPresent": false, "acceptableCategories": ["Hiburan"] } },
+  { "id": "noamt_002", "input": "bayar spotify", "tags": ["no_amount_stated"], "expect": { "type": "expense", "amountPresent": false, "acceptableCategories": ["Hiburan"] } },
+  { "id": "noamt_003", "input": "beli makan siang", "tags": ["no_amount_stated"], "expect": { "type": "expense", "amountPresent": false, "acceptableCategories": ["Makanan & Minuman"] } },
+
+  { "id": "slang_001", "input": "abis jajan mie ayam 2 puluh rebu", "tags": ["informal_slang"], "expect": { "type": "expense", "amount": 20000 } },
+  { "id": "slang_002", "input": "beli rokok sebungkus 25rebu", "tags": ["informal_slang"], "expect": { "type": "expense", "amount": 25000 } },
+  { "id": "slang_003", "input": "jajan 25rbu tadi", "tags": ["informal_slang"], "expect": { "type": "expense", "amount": 25000 } },
+  { "id": "slang_004", "input": "trf ke temen 50rb", "tags": ["informal_slang", "ambiguous_direction"], "expect": { "typeOneOf": ["unknown", "expense"], "amountPresent": true } },
+  { "id": "slang_005", "input": "makan malem abis 30rebu doang", "tags": ["informal_slang"], "expect": { "type": "expense", "amount": 30000 } },
+
+  { "id": "formal_001", "input": "Saya baru saja melakukan pembayaran sebesar Rp150.000 untuk tagihan listrik", "tags": ["formal_register"], "expect": { "type": "expense", "amount": 150000, "acceptableCategories": ["Tagihan"] } },
+  { "id": "formal_002", "input": "Pengeluaran hari ini untuk transportasi sebesar Rp45.000", "tags": ["formal_register"], "expect": { "type": "expense", "amount": 45000, "acceptableCategories": ["Transport"] } },
+  { "id": "formal_003", "input": "Menerima transfer gaji sebesar Rp4.500.000", "tags": ["formal_register"], "expect": { "type": "income", "amount": 4500000 } },
+
+  { "id": "nontx_001", "input": "halo", "tags": ["non_transaction"], "expect": { "amountPresent": false } },
+  { "id": "nontx_002", "input": "makasih ya bantuannya", "tags": ["non_transaction"], "expect": { "amountPresent": false } },
+  { "id": "nontx_003", "input": "gimana caranya ganti kategori transaksi", "tags": ["non_transaction"], "expect": { "amountPresent": false } },
+
+  { "id": "date_001", "input": "kemarin abis makan 20rb", "tags": ["date_relative"], "knownGap": true, "knownGapNote": "no transaction-date field exists yet - only checking amount/type extraction still works despite the date phrase", "expect": { "type": "expense", "amount": 20000 } },
+  { "id": "date_002", "input": "tadi pagi beli sarapan 15rb", "tags": ["date_relative"], "knownGap": true, "knownGapNote": "same as date_001", "expect": { "type": "expense", "amount": 15000 } },
+  { "id": "date_003", "input": "minggu lalu bayar listrik 200rb", "tags": ["date_relative"], "knownGap": true, "knownGapNote": "same as date_001", "expect": { "type": "expense", "amount": 200000 } },
+
+  { "id": "multi_001", "input": "beli baju sama sepatu 200rb", "tags": ["multi_item"], "knownGap": true, "knownGapNote": "schema only supports one transaction per message - checking it doesn't crash and extracts a reasonable total", "expect": { "type": "expense", "amountPresent": true } },
+  { "id": "multi_002", "input": "jajan cimol sama es teh 15rb", "tags": ["multi_item"], "knownGap": true, "knownGapNote": "same as multi_001", "expect": { "type": "expense", "amountPresent": true } },
+  { "id": "multi_003", "input": "belanja bulanan plus bensin 300rb", "tags": ["multi_item"], "knownGap": true, "knownGapNote": "same as multi_001", "expect": { "type": "expense", "amountPresent": true } }
+]
