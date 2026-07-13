@@ -5,6 +5,7 @@ import {
   parseDirectionReply,
   parseAmount,
   resolveAmbiguousExtraction,
+  looksLikeTransaction,
   STATES,
 } from '../../src/whatsapp/messageHandler.js';
 
@@ -18,9 +19,56 @@ describe('detectIntent (pure, no LLM call)', () => {
     assert.equal(detectIntent('aku mau nabung buat laptop'), 'goal_start');
   });
 
-  test('defaults to transaction for anything else', () => {
+  test('detects a help/capability question', () => {
+    assert.equal(detectIntent('di fitur lu ini bisa ngapain aja sih?'), 'help');
+    assert.equal(detectIntent('lu bisa apa?'), 'help');
+    assert.equal(detectIntent('cara pakainya gimana?'), 'help');
+    assert.equal(detectIntent('siapa yang bikin lu?'), 'help');
+  });
+
+  test('detects a plain greeting', () => {
+    assert.equal(detectIntent('halo'), 'greeting');
+    assert.equal(detectIntent('pagi!'), 'greeting');
+  });
+
+  test('detects small talk / acknowledgment', () => {
+    assert.equal(detectIntent('makasih ya'), 'small_talk');
+    assert.equal(detectIntent('sip'), 'small_talk');
+    assert.equal(detectIntent('oke'), 'small_talk');
+  });
+
+  test('detects a transaction message', () => {
     assert.equal(detectIntent('jajan mixue 25rb'), 'transaction');
     assert.equal(detectIntent('bayar netflix'), 'transaction');
+  });
+
+  test('transaction signal wins over a filler greeting/acknowledgment word in the same message', () => {
+    // Regression test for an ordering bug caught before shipping: "oke"
+    // and "halo" are common sentence-starters that shouldn't suppress a
+    // real transaction mentioned in the same message.
+    assert.equal(detectIntent('oke, tadi jajan 20rb'), 'transaction');
+    assert.equal(detectIntent('halo, mau catet bayar listrik 150rb'), 'transaction');
+  });
+
+  test('falls back to unclear for messages matching no category and no transaction signal', () => {
+    assert.equal(detectIntent('eh btw tadi gua liat kucing lucu di jalan'), 'unclear');
+  });
+});
+
+describe('looksLikeTransaction (pure, no LLM call)', () => {
+  test('true when an amount-like number is present', () => {
+    assert.equal(looksLikeTransaction('jajan mixue 25rb'), true);
+    assert.equal(looksLikeTransaction('bayar kost 1.5jt'), true);
+  });
+
+  test('true when a transaction verb is present even without a number', () => {
+    assert.equal(looksLikeTransaction('bayar netflix'), true);
+    assert.equal(looksLikeTransaction('dapet gaji'), true);
+  });
+
+  test('false for messages with neither a number nor a transaction verb', () => {
+    assert.equal(looksLikeTransaction('halo apa kabar'), false);
+    assert.equal(looksLikeTransaction('makasih banyak ya'), false);
   });
 });
 

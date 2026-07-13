@@ -39,17 +39,116 @@ export const STATES = {
 
 const RECAP_KEYWORDS = ['habis berapa', 'rekap', 'pengeluaran', 'boros', 'kondisi keuangan'];
 const GOAL_KEYWORDS = ['mau nabung', 'nabung buat', 'bikin goal', 'target nabung'];
+const HELP_KEYWORDS = [
+  'bisa apa',
+  'bisa ngapain',
+  'ngapain aja',
+  'fitur apa',
+  'ada fitur',
+  'cara pakai',
+  'cara pake',
+  'gimana cara',
+  'siapa yang bikin',
+  'siapa yang buat',
+  'kamu siapa',
+  'lu siapa',
+  'ini apa',
+  'buat apa',
+  'gunanya apa',
+];
+const GREETING_WORDS = ['halo', 'hai', 'hi', 'hello', 'pagi', 'siang', 'sore', 'malam'];
+const SMALL_TALK_WORDS = [
+  'makasih',
+  'terima kasih',
+  'thanks',
+  'thank you',
+  'sip',
+  'oke',
+  'ok',
+  'mantap',
+  'nice',
+  'good',
+];
+
+// Signals that a message is plausibly about a transaction - checked BEFORE
+// calling Gemini extraction, so an obviously non-financial message doesn't
+// burn an API call only to get a generic "kurang paham" fallback. This is
+// the "confidence" layer at the router level (distinct from extraction's
+// own confidence field, which judges category/direction, not "is this
+// about money at all").
+const AMOUNT_PATTERN = /\d/;
+const TRANSACTION_UNIT_PATTERN = /\b(rb|ribu|rebu|k|jt|juta)\b/i;
+const TRANSACTION_VERBS = [
+  'beli',
+  'bayar',
+  'jajan',
+  'dapet',
+  'dapat',
+  'gaji',
+  'transfer',
+  'trf',
+  'kirim',
+  'parkir',
+  'isi bensin',
+  'nabung',
+  'jual',
+  'bonus',
+];
+
+/** Word-boundary substring match - avoids "ok" matching inside "oke" and similar false positives. */
+function containsWord(text, word) {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+}
+
+function pickRandom(options) {
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+const GREETING_REPLIES = [
+  'Halo! Ada yang mau dicatet hari ini?',
+  'Hai! Mau nyatet pengeluaran/pemasukan, atau butuh rekap?',
+  'Halo juga! 👋 Gas, ada transaksi yang mau dicatet?',
+];
+
+const SMALL_TALK_REPLIES = ['Sip 👍', 'Oke, gas terus!', 'Sama-sama! 😊', 'Siap!'];
+
+/**
+ * Cheap, deterministic check for "does this message plausibly describe a
+ * transaction" - a number/amount-unit, or a common transaction verb.
+ * Pure, no I/O. Used by detectIntent as the router-level confidence gate
+ * before spending a Gemini extraction call.
+ */
+export function looksLikeTransaction(rawText) {
+  const lower = rawText.toLowerCase();
+  if (AMOUNT_PATTERN.test(rawText) || TRANSACTION_UNIT_PATTERN.test(lower)) return true;
+  return TRANSACTION_VERBS.some((verb) => lower.includes(verb));
+}
 
 /**
  * Cheap, deterministic intent pre-filter. Runs BEFORE any Gemini call so
- * that obviously-non-transaction messages (recap requests, starting a
- * goal) don't waste an extraction call.
+ * that obviously-non-transaction messages (recap requests, greetings,
+ * help questions, small talk) don't waste an extraction call - and,
+ * importantly, don't repeatedly hit the generic "kurang paham, sebutin
+ * nominalnya" fallback for things that were never meant to be a
+ * transaction in the first place.
  */
 export function detectIntent(rawText) {
-  const lower = rawText.toLowerCase();
+  const lower = rawText.toLowerCase().trim();
   if (RECAP_KEYWORDS.some((kw) => lower.includes(kw))) return 'recap';
   if (GOAL_KEYWORDS.some((kw) => lower.includes(kw))) return 'goal_start';
-  return 'transaction';
+  if (HELP_KEYWORDS.some((kw) => lower.includes(kw))) return 'help';
+
+  // Transaction signal is checked BEFORE greeting/small_talk on purpose:
+  // a filler word like "oke" or "halo" can legitimately prefix a real
+  // transaction message (e.g. "oke, tadi jajan 20rb") - a strong
+  // transaction signal should win over a weak filler-word match, not the
+  // other way around.
+  if (looksLikeTransaction(rawText)) return 'transaction';
+
+  if (GREETING_WORDS.some((w) => containsWord(lower, w))) return 'greeting';
+  if (SMALL_TALK_WORDS.some((w) => containsWord(lower, w))) return 'small_talk';
+  return 'unclear';
 }
 
 /** Interprets a direct reply to "uang masuk atau keluar?" - no LLM needed. */
@@ -147,17 +246,58 @@ async function handleIdle(user, rawText, trace) {
     };
   }
 
-  // Default: treat as a transaction message - this is the only branch
-  // that calls Gemini extraction.
+  if (intent === 'help') {
+    return {
+      reply:
+        'Aku bantu nyatet pemasukan & pengeluaran kamu lewat chat biasa - nggak perlu format khusus, ' +
+        'tinggal bilang aja misal "jajan 20rb" atau "gaji 5jt". Kalau ada dua transaksi beruntun, tinggal lanjut chat aja. ' +
+        'Ketik "rekap" buat liat ringkasan, atau bilang "mau nabung buat ..." buat bikin target nabung. Aku dibikin sama developer kalian sendiri buat bantu urusan keuangan harian 😄',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  if (intent === 'greeting') {
+    return {
+      reply: pickRandom(GREETING_REPLIES),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  if (intent === 'small_talk') {
+    return {
+      reply: pickRandom(SMALL_TALK_REPLIES),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  if (intent === 'unclear') {
+    return {
+      reply:
+        'Hmm, aku kurang paham maksudnya nih. Kalau mau nyatet transaksi, coba sebutin nominalnya ya (misal "jajan 20rb"), atau ketik "bisa apa aja?" buat liat fitur aku.',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  // intent === 'transaction' from here on - the only branch that calls
+  // Gemini extraction.
   const pendingContext = await contextDomain.getPendingContext(user.id);
   trace.pendingContextBefore = pendingContext;
 
   let lastTransaction = null;
   if (pendingContext) {
-    lastTransaction = await transactionQueries.getTransactionById(pendingContext.last_transaction_id);
+    lastTransaction = await transactionQueries.getTransactionById(
+      pendingContext.last_transaction_id,
+    );
   }
 
-  const extraction = await aiProvider.extract(rawText, lastTransaction ? { lastTransaction } : null);
+  const extraction = await aiProvider.extract(
+    rawText,
+    lastTransaction ? { lastTransaction } : null,
+  );
   trace.extraction = extraction;
 
   if (extraction.type === 'unknown' || extraction.confidence === 'low') {
@@ -256,7 +396,8 @@ async function handleAwaitingDirection(user, rawText, trace) {
   if (!hasValidAmount) {
     trace.error = 'missing_amount_in_pending_extraction';
     return {
-      reply: 'Waduh, kayaknya nominalnya kelewat kecatet. Coba kirim ulang transaksinya ya (misal "jajan 15rb").',
+      reply:
+        'Waduh, kayaknya nominalnya kelewat kecatet. Coba kirim ulang transaksinya ya (misal "jajan 15rb").',
       newState: STATES.IDLE,
       newStateContext: {},
     };
