@@ -13,10 +13,12 @@
     "test:unit": "node --test test/unit/*.test.js",
     "test:integration": "node --test test/integration/queries.test.js",
     "test:golden": "node --test test/integration/aiExtraction.test.js",
+    "test:intent": "node --test test/integration/intentClassifier.test.js",
     "test": "npm run test:unit",
     "pipeline": "node scripts/testPipeline.js",
     "extraction": "node scripts/testExtraction.js",
     "persona": "node scripts/testPersona.js",
+    "intent": "node scripts/testIntent.js",
     "eval": "node scripts/runEval.js"
   },
   "dependencies": {

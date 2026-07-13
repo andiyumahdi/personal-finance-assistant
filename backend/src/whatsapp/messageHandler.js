@@ -187,17 +187,6 @@ async function getOrCreateUser(phoneNumber) {
   return user;
 }
 
-async function handleRecap(user, trace) {
-  const transactions = await transactionQueries.listTransactions(user.id);
-  const totals = calculateTotals(transactions);
-  trace.summary = totals;
-
-  const persona = await aiProvider.generateReply('recap', totals);
-  trace.persona = persona;
-
-  return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
-}
-
 /**
  * Decides how to respond when extraction comes back unknown/low-confidence.
  * Pure - no I/O - so this branching logic is directly unit-testable without
@@ -230,60 +219,92 @@ export function resolveAmbiguousExtraction(extraction) {
   };
 }
 
-async function handleIdle(user, rawText, trace) {
-  const intent = detectIntent(rawText);
-  trace.intent = intent;
+/**
+ * Resolves intent for an IDLE-state message. Rule-based detectIntent runs
+ * first (free, instant); the semantic classifier (aiProvider.classifyIntent)
+ * is ONLY called when the rule-based router can't confidently decide
+ * ('unclear') - per the hybrid-router decision. trace.intentSource records
+ * which path was used, for debugging/observability.
+ */
+async function resolveIntent(rawText, trace) {
+  const ruleBasedIntent = detectIntent(rawText);
+  trace.intentSource = 'rule_based';
 
-  if (intent === 'recap') {
-    return handleRecap(user, trace);
+  if (ruleBasedIntent !== 'unclear') {
+    return ruleBasedIntent;
   }
 
-  if (intent === 'goal_start') {
-    return {
-      reply: 'Target berapa?',
-      newState: STATES.AWAITING_GOAL_TARGET,
-      newStateContext: {},
-    };
-  }
+  trace.intentSource = 'classifier_fallback';
+  const classifiedIntent = await aiProvider.classifyIntent(rawText);
+  trace.classifiedIntent = classifiedIntent;
+  return classifiedIntent;
+}
 
-  if (intent === 'help') {
-    return {
-      reply:
-        'Aku bantu nyatet pemasukan & pengeluaran kamu lewat chat biasa - nggak perlu format khusus, ' +
-        'tinggal bilang aja misal "jajan 20rb" atau "gaji 5jt". Kalau ada dua transaksi beruntun, tinggal lanjut chat aja. ' +
-        'Ketik "rekap" buat liat ringkasan, atau bilang "mau nabung buat ..." buat bikin target nabung. Aku dibikin sama developer kalian sendiri buat bantu urusan keuangan harian 😄',
-      newState: STATES.IDLE,
-      newStateContext: {},
-    };
-  }
+// ---------------------------------------------------------------------------
+// Per-intent handlers. Every handler shares the same signature -
+// (user, rawText, trace) => Promise<{reply, newState, newStateContext}> -
+// so a new intent can be added later by writing one handler function and
+// registering it in INTENT_HANDLERS below, without touching handleIdle's
+// dispatch logic itself.
+// ---------------------------------------------------------------------------
 
-  if (intent === 'greeting') {
-    return {
-      reply: pickRandom(GREETING_REPLIES),
-      newState: STATES.IDLE,
-      newStateContext: {},
-    };
-  }
+async function handleRecapIntent(user, _rawText, trace) {
+  const transactions = await transactionQueries.listTransactions(user.id);
+  const totals = calculateTotals(transactions);
+  trace.summary = totals;
 
-  if (intent === 'small_talk') {
-    return {
-      reply: pickRandom(SMALL_TALK_REPLIES),
-      newState: STATES.IDLE,
-      newStateContext: {},
-    };
-  }
+  const persona = await aiProvider.generateReply('recap', totals);
+  trace.persona = persona;
 
-  if (intent === 'unclear') {
-    return {
-      reply:
-        'Hmm, aku kurang paham maksudnya nih. Kalau mau nyatet transaksi, coba sebutin nominalnya ya (misal "jajan 20rb"), atau ketik "bisa apa aja?" buat liat fitur aku.',
-      newState: STATES.IDLE,
-      newStateContext: {},
-    };
-  }
+  return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
+}
 
-  // intent === 'transaction' from here on - the only branch that calls
-  // Gemini extraction.
+async function handleGoalStartIntent() {
+  return {
+    reply: 'Target berapa?',
+    newState: STATES.AWAITING_GOAL_TARGET,
+    newStateContext: {},
+  };
+}
+
+async function handleHelpIntent() {
+  return {
+    reply:
+      'Aku bantu nyatet pemasukan & pengeluaran kamu lewat chat biasa - nggak perlu format khusus, ' +
+      'tinggal bilang aja misal "jajan 20rb" atau "gaji 5jt". Kalau ada dua transaksi beruntun, tinggal lanjut chat aja. ' +
+      'Ketik "rekap" buat liat ringkasan, atau bilang "mau nabung buat ..." buat bikin target nabung. Aku dibikin sama developer kalian sendiri buat bantu urusan keuangan harian 😄',
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+async function handleGreetingIntent() {
+  return {
+    reply: pickRandom(GREETING_REPLIES),
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+async function handleSmallTalkIntent() {
+  return {
+    reply: pickRandom(SMALL_TALK_REPLIES),
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+async function handleUnclearIntent() {
+  return {
+    reply:
+      'Hmm, aku kurang paham maksudnya nih. Kalau mau nyatet transaksi, coba sebutin nominalnya ya (misal "jajan 20rb"), atau ketik "bisa apa aja?" buat liat fitur aku.',
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+/** The only handler that calls Gemini extraction. */
+async function handleTransactionIntent(user, rawText, trace) {
   const pendingContext = await contextDomain.getPendingContext(user.id);
   trace.pendingContextBefore = pendingContext;
 
@@ -369,6 +390,27 @@ async function handleIdle(user, rawText, trace) {
   trace.persona = persona;
 
   return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
+}
+
+// Dispatch table: to add a new intent later, write one handler above with
+// the (user, rawText, trace) signature and add one line here - handleIdle
+// itself never needs to change.
+const INTENT_HANDLERS = {
+  recap: handleRecapIntent,
+  goal_start: handleGoalStartIntent,
+  help: handleHelpIntent,
+  greeting: handleGreetingIntent,
+  small_talk: handleSmallTalkIntent,
+  transaction: handleTransactionIntent,
+  unclear: handleUnclearIntent,
+};
+
+async function handleIdle(user, rawText, trace) {
+  const intent = await resolveIntent(rawText, trace);
+  trace.intent = intent;
+
+  const handler = INTENT_HANDLERS[intent] || handleUnclearIntent;
+  return handler(user, rawText, trace);
 }
 
 async function handleAwaitingDirection(user, rawText, trace) {

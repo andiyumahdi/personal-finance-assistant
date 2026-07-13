@@ -14,6 +14,13 @@ import {
   PERSONA_SYSTEM_INSTRUCTION,
   buildPersonaPrompt,
 } from './personaPrompt.js';
+import {
+  INTENT_CLASSIFIER_PROMPT_VERSION,
+  INTENT_CLASSIFIER_SYSTEM_INSTRUCTION,
+  INTENT_CLASSIFIER_RESPONSE_SCHEMA,
+  INTENT_CATEGORIES,
+  buildIntentClassifierPrompt,
+} from './intentClassifierPrompt.js';
 import { CATEGORIES } from '../config/categories.js';
 
 const VALID_TYPES = ['income', 'expense', 'unknown'];
@@ -105,4 +112,36 @@ export const aiProvider = {
 
     return { text: text.trim(), prompt_version: PERSONA_PROMPT_VERSION };
   },
+
+  /**
+   * Semantic intent classification - used ONLY as a fallback when the
+   * rule-based router (whatsapp/messageHandler.js detectIntent) can't
+   * confidently determine intent. Fails SAFE to 'unclear' on any error
+   * (API failure, circuit breaker open, invalid response) rather than
+   * throwing - this is a fallback aid, not a critical path, and the
+   * caller's existing 'unclear' handling already covers this outcome
+   * gracefully. See SPECIFICATION.md section 12.3 (Prompt Versioning).
+   */
+  async classifyIntent(rawText) {
+    const prompt = buildIntentClassifierPrompt(rawText);
+    const model = process.env.GEMINI_MODEL_EXTRACTION || 'gemini-3.1-flash-lite';
+
+    try {
+      const raw = await callGemini(prompt, {
+        model,
+        systemInstruction: INTENT_CLASSIFIER_SYSTEM_INSTRUCTION,
+        responseSchema: INTENT_CLASSIFIER_RESPONSE_SCHEMA,
+      });
+
+      const parsed = JSON.parse(raw);
+      if (INTENT_CATEGORIES.includes(parsed.intent)) {
+        return parsed.intent;
+      }
+      return 'unclear';
+    } catch {
+      return 'unclear';
+    }
+  },
 };
+
+export { INTENT_CLASSIFIER_PROMPT_VERSION };
