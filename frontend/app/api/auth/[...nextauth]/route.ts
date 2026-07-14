@@ -1,12 +1,7 @@
-// NextAuth Google provider configuration + link_token binding.
-// See docs/SPECIFICATION.md section 2.5 and section 11.5 (Security Review):
-// link_token must be single-use, short-lived, and bound to the specific
-// phone number that requested it.
+// Auth.js v5 route handler - all config lives in the root auth.ts file
+// per v5 convention. See auth.ts for providers, callbacks, and the
+// Google<->phone-number linking logic.
 
-export async function GET() {
-  // TODO: NextAuth handler
-}
+import { handlers } from '@/auth';
 
-export async function POST() {
-  // TODO: NextAuth handler
-}
+export const { GET, POST } = handlers;
