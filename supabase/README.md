@@ -26,11 +26,18 @@ seed.sql      # Optional local/dev seed data (placeholder, unused for now)
 `20260709122541_init_schema.sql` — extensions (`pgcrypto`), all 5 tables,
 constraints, and indices per `../docs/SPECIFICATION.md` section 3.
 
-**Deliberately not included yet:** Row-Level Security policies. The
-authorization strategy (NextAuth session vs native Supabase Auth /
-`auth.uid()`) has not been decided yet and is deferred to Phase 3. Until RLS
-is added, these tables must only be accessed via the `service_role` key from
-trusted server-side code — never via the `anon` key from a browser client.
+`20260714051107_add_rls_policies.sql` — RLS enabled on all 5 tables, with
+**no policies for the anon/authenticated roles**. This project uses
+NextAuth (Google OAuth), not native Supabase Auth, so `auth.uid()` is
+never populated — a standard `auth.uid() = user_id` policy wouldn't be
+meaningful here. Instead: RLS-enabled + zero policies means the `anon`
+key can never read/write any row, full stop. All real access goes
+through Next.js API routes using the `service_role` key, with
+authorization enforced in application code (NextAuth session →
+`users.google_id` → `users.id` → filter every query by that `user_id`).
+This is defense-in-depth against the `anon` key ever being used
+directly from client-side code — see the migration file itself for the
+full reasoning.
 
 ## Why this matters
 
