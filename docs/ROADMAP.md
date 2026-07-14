@@ -272,3 +272,50 @@ Deliberately deferred per explicit decision, once all phases (A-E) are done and 
 - Responsive/mobile optimization
 
 Source: UI evaluation + feedback from prospective users, collected during Phase E. Recorded here rather than acted on immediately, to protect the current focus on finishing Phase E and validating the MVP end-to-end first.
+
+---
+
+## Conversation Layer: FROZEN (per explicit decision)
+
+As of this decision, the conversation/intent layer (rule-based router +
+semantic classifier fallback, `src/whatsapp/messageHandler.js` +
+`src/ai/intentClassifierPrompt.js`) is considered good enough for MVP.
+
+**Still fixed if found:**
+- Bugs, crashes, or a broken main flow (transaction recording, recap, goals)
+- Edge cases that cause total failure (not just a suboptimal reply)
+
+**Explicitly deferred until after v1.0 is running with real users:**
+- Adding new intents beyond the current set (`recap`, `goal_start`, `help`,
+  `greeting`, `small_talk`, `transaction`, `unclear`)
+- Broadening conversational coverage / making the bot "chat better" in general
+- Any change whose only goal is handling more phrasing variety, not fixing
+  something broken
+
+Rationale: the hybrid router (rule-based + classifier fallback) already
+closed the specific gap that motivated it (informal paraphrasing of
+existing intents). Continuing to expand intent coverage without real
+usage data is exactly the "asumsi, bukan data" pattern this project has
+deliberately avoided elsewhere (see the extraction eval harness
+decision). Real beta testing data will show which gaps actually matter.
+
+## Definition of Done (adopted going forward)
+
+A module is done when it meets MVP requirements - not when it's been
+maximally polished. Once done, move to the next module. Backlog items
+(conversational UX, new intents, features beyond MVP scope) reopen only
+after v1.0 is running with real users, based on actual usage data.
+
+## Revised Priority Order (supersedes remaining Phase E follow-ups)
+
+1. Authentication (Google login, session, logout)
+2. Dashboard integrated with backend + Supabase (real data, not mocks)
+3. All main pages use real data
+4. Core actions active (CRUD, navigation, profile, etc.)
+5. Loading/empty/error states, toasts, baseline UX polish
+6. Internal beta testing - real usage data drives what backlog items (see
+   above) actually get prioritized next, not assumption
+
+Scheduler (weekly/monthly recap trigger wiring) and the Post-MVP Backlog
+above remain deferred behind this list, consistent with Definition of
+Done - finish what's in progress before opening new scope.
