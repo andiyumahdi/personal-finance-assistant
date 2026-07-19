@@ -26,6 +26,12 @@ describe('detectIntent (pure, no LLM call)', () => {
     assert.equal(detectIntent('siapa yang bikin lu?'), 'help');
   });
 
+  test('detects a dashboard/login link request', () => {
+    assert.equal(detectIntent('dashboard'), 'dashboard_link');
+    assert.equal(detectIntent('login'), 'dashboard_link');
+    assert.equal(detectIntent('mau login dong'), 'dashboard_link');
+  });
+
   test('detects a plain greeting', () => {
     assert.equal(detectIntent('halo'), 'greeting');
     assert.equal(detectIntent('pagi!'), 'greeting');

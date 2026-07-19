@@ -17,6 +17,7 @@
 // extraction call on it (see SPECIFICATION.md section 5, "pre-filter
 // before LLM").
 
+import crypto from 'node:crypto';
 import * as userQueries from '../db/queries/users.js';
 import * as transactionQueries from '../db/queries/transactions.js';
 import * as messageLogQueries from '../db/queries/messageLog.js';
@@ -39,6 +40,7 @@ export const STATES = {
 
 const RECAP_KEYWORDS = ['habis berapa', 'rekap', 'pengeluaran', 'boros', 'kondisi keuangan'];
 const GOAL_KEYWORDS = ['mau nabung', 'nabung buat', 'bikin goal', 'target nabung'];
+const DASHBOARD_LINK_KEYWORDS = ['dashboard', 'login'];
 const HELP_KEYWORDS = [
   'bisa apa',
   'bisa ngapain',
@@ -138,6 +140,7 @@ export function detectIntent(rawText) {
   if (RECAP_KEYWORDS.some((kw) => lower.includes(kw))) return 'recap';
   if (GOAL_KEYWORDS.some((kw) => lower.includes(kw))) return 'goal_start';
   if (HELP_KEYWORDS.some((kw) => lower.includes(kw))) return 'help';
+  if (DASHBOARD_LINK_KEYWORDS.some((kw) => lower === kw || lower.includes(kw))) return 'dashboard_link';
 
   // Transaction signal is checked BEFORE greeting/small_talk on purpose:
   // a filler word like "oke" or "halo" can legitimately prefix a real
@@ -278,6 +281,48 @@ async function handleHelpIntent() {
   };
 }
 
+const LINK_TOKEN_EXPIRY_MINUTES = 10; // matches app/link/route.ts's cookie maxAge on the frontend
+
+/**
+ * dashboard_link intent handler (SPECIFICATION.md section 2.5, per the
+ * WhatsApp-first linking flow decision):
+ *   - Already-linked users (google_id set) are told they're connected and
+ *     pointed at the dashboard directly - NOT issued a new token. Magic
+ *     links are for first-time linking only; re-linking is a deliberately
+ *     separate future feature, not this path.
+ *   - First-time users get a fresh single-use token (10 min expiry,
+ *     matching the frontend cookie) and a link built from
+ *     DASHBOARD_BASE_URL.
+ */
+async function handleDashboardLinkIntent(user, _rawText, trace) {
+  if (user.google_id) {
+    trace.dashboardLinkOutcome = 'already_linked';
+    return {
+      reply: 'Akun kamu udah kesambung ke dashboard kok. Tinggal buka dashboard-nya dan login pake akun Google yang sama ya 👍',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + LINK_TOKEN_EXPIRY_MINUTES * 60 * 1000).toISOString();
+
+  await userQueries.updateUserById(user.id, {
+    link_token: token,
+    link_token_expires: expiresAt,
+  });
+  trace.dashboardLinkOutcome = 'token_issued';
+
+  const baseUrl = process.env.DASHBOARD_BASE_URL || 'http://localhost:3000';
+  const link = `${baseUrl}/link?token=${token}`;
+
+  return {
+    reply: `Nih link buat connect ke dashboard-nya, berlaku ${LINK_TOKEN_EXPIRY_MINUTES} menit ya:\n${link}`,
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
 async function handleGreetingIntent() {
   return {
     reply: pickRandom(GREETING_REPLIES),
@@ -399,6 +444,7 @@ const INTENT_HANDLERS = {
   recap: handleRecapIntent,
   goal_start: handleGoalStartIntent,
   help: handleHelpIntent,
+  dashboard_link: handleDashboardLinkIntent,
   greeting: handleGreetingIntent,
   small_talk: handleSmallTalkIntent,
   transaction: handleTransactionIntent,
