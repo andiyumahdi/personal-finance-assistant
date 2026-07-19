@@ -6,7 +6,7 @@
 // "coming soon" state - only Google OAuth is wired to real logic this
 // sprint. See docs/ROADMAP.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { signIn, useSession } from 'next-auth/react';
 import Link from 'next/link';
@@ -67,12 +67,32 @@ export function LoginForm() {
     }
   };
 
+  // Arrived here via the WhatsApp bot's magic link (app/link/route.ts set
+  // the pfa_link_token cookie and redirected here with ?autoLink=1) -
+  // trigger Google sign-in automatically instead of making the user click
+  // the button again. Runs once; the ref guards against React 18 Strict
+  // Mode's double-invoke in development, which would otherwise fire
+  // signIn() twice.
+  const autoLink = searchParams.get('autoLink') === '1';
+  const autoLinkTriggered = useRef(false);
+  useEffect(() => {
+    if (autoLink && !autoLinkTriggered.current) {
+      autoLinkTriggered.current = true;
+      onGoogle();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoLink]);
+
   return (
     <AuthLayout>
       <div className="space-y-1.5">
-        <h2 className="text-[22px] font-semibold tracking-tight">Welcome back</h2>
+        <h2 className="text-[22px] font-semibold tracking-tight">
+          {autoLink ? 'Connecting your account…' : 'Welcome back'}
+        </h2>
         <p className="text-[13px] text-muted-foreground">
-          Sign in to continue managing your finances with Nera.
+          {autoLink
+            ? 'Redirecting you to Google to finish linking your WhatsApp account.'
+            : 'Sign in to continue managing your finances with Nera.'}
         </p>
       </div>
 

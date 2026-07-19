@@ -10,8 +10,17 @@
 //
 // The actual token validation + single-use consumption happens in
 // auth.ts's signIn callback - this route only carries the token from the
-// URL into a short-lived httpOnly cookie, then redirects into the Google
-// sign-in flow.
+// URL into a short-lived httpOnly cookie, then redirects into /login with
+// an autoLink signal.
+//
+// IMPORTANT: this does NOT redirect straight to /api/auth/signin/google.
+// That was the original implementation and it throws "UnknownAction:
+// Unsupported action" in next-auth v5 - a raw GET redirect to the
+// built-in signin endpoint is not a supported way to initiate OAuth
+// anymore (CSRF protection requires going through the client-side
+// signIn() helper, which does a proper CSRF-tokened POST under the hood).
+// Redirecting to /login?autoLink=1 lets login-form.tsx call that helper
+// correctly instead.
 
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -22,9 +31,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/login?error=no_link_token', request.url));
   }
 
-  const response = NextResponse.redirect(
-    new URL('/api/auth/signin/google?callbackUrl=/dashboard', request.url),
-  );
+  const response = NextResponse.redirect(new URL('/login?autoLink=1', request.url));
 
   response.cookies.set('pfa_link_token', token, {
     httpOnly: true,
