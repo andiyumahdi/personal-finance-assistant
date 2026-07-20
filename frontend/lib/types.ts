@@ -12,3 +12,17 @@ export type Goal = {
   status: 'active' | 'achieved' | 'abandoned';
   created_at: string;
 };
+
+export type Transaction = {
+  id: string;
+  user_id: string;
+  type: 'income' | 'expense';
+  amount: number;
+  category: string;
+  raw_text: string;
+  confidence: 'high' | 'medium' | 'low' | null;
+  source_message_id: string;
+  prompt_version: string | null;
+  deleted_at: string | null;
+  created_at: string;
+};
