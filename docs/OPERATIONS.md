@@ -55,6 +55,31 @@ Follow immediately if any credential is suspected leaked:
 |---|---|---|
 | — | — | (none yet) |
 
+## Scheduled recaps
+
+Weekly and monthly recaps are triggered externally, not by an in-process
+timer (node-cron) - Render's free tier can sleep, so an internal timer
+isn't reliable, and an external trigger conveniently wakes the service too.
+
+Setup (using a free service like cron-job.org, or any scheduler that can
+send an HTTP request with a custom header):
+
+1. Set `INTERNAL_CRON_SECRET` in the backend's environment variables (see
+   `.env.example` for how to generate one).
+2. Create two scheduled jobs pointing at your deployed backend:
+   - **Weekly**: `POST https://<your-backend>/internal/recap?period=weekly`
+     - Suggested schedule: every Monday, 08:00 WIB
+   - **Monthly**: `POST https://<your-backend>/internal/recap?period=monthly`
+     - Suggested schedule: 1st of each month, 08:00 WIB
+3. Both requests must include the header `X-Internal-Secret: <the same value as INTERNAL_CRON_SECRET>`.
+
+Each run returns a JSON summary (`{ sent, skipped, failed, completedAt }`)
+- `skipped` counts users with no transactions in the period (they aren't
+  sent an empty "you spent Rp0" message). `GET /healthz` also reports
+  `lastRecapRunAt` - if that timestamp goes stale past when a recap was
+  expected, the cron trigger itself has silently stopped firing (dead
+  man's switch, section 11.3).
+
 ## Migration policy
 
 All schema changes go through `supabase/migrations/` — never manual

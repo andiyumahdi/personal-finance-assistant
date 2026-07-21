@@ -52,3 +52,12 @@ export async function updateUserById(userId, changes) {
   if (error) throw error;
   return data;
 }
+
+/** Lists all users - used by the recap scheduler to iterate recipients. */
+export async function listAllUsers() {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.from('users').select('*');
+
+  if (error) throw error;
+  return data;
+}
