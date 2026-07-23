@@ -258,7 +258,13 @@ Phases A through D have zero dependency on Meta Developer account status, so all
 
 ---
 
-## Post-MVP Backlog (do not implement before MVP is complete)
+## Post-MVP Backlog (superseded — absorbed into the Locked Roadmap below)
+
+**Status: no longer "post-MVP deferred."** Per the scope-widening decision
+recorded in "Locked Roadmap (Sprint A-E)" further down this document,
+these items are now IN scope, sequenced as Sprint D (Financial
+Organization) and Sprint E (Intelligence). Kept here only as the original
+list/source of these ideas, not as an active backlog anymore.
 
 Deliberately deferred per explicit decision, once all phases (A-E) are done and the app is running end-to-end. Not part of the frozen MVP scope in `SPECIFICATION.md` — a conscious re-scoping decision is required before any of these move into active development, not an incremental addition mid-phase.
 
@@ -319,3 +325,116 @@ after v1.0 is running with real users, based on actual usage data.
 Scheduler (weekly/monthly recap trigger wiring) and the Post-MVP Backlog
 above remain deferred behind this list, consistent with Definition of
 Done - finish what's in progress before opening new scope.
+
+**Status: SUPERSEDED by the "Locked Roadmap (Sprint A-E)" section below.**
+Kept here, not deleted, as a record of the reasoning that applied while
+it was active - Sprint A above is exactly what this priority order
+produced.
+
+---
+
+## Locked Roadmap (Sprint A-E) — supersedes the Revised Priority Order above
+
+**Decision date: this entry.** Scope was deliberately widened before beta,
+per explicit decision: beta testing is no longer scheduled after Sprint A
+(the original MVP) - it now happens after Sprint E. The rationale for the
+original "beta early" plan (real usage data over assumption) still holds
+as a principle - it now applies at the end of a larger scope instead of a
+smaller one. This is a conscious trade-off: more is built without live
+user feedback than the original plan called for. Noted once here as the
+record of that trade-off, not re-litigated further - the decision is
+locked.
+
+**Working principles for every sprint below** (apply throughout, not
+repeated per sprint):
+- Don't sacrifice architecture for speed.
+- If a feature needs a foundation first, build the foundation first.
+- Reuse existing components/services; no duplicate logic.
+- New features follow the existing architectural patterns (query layer /
+  domain layer separation, trigger-agnostic scheduling, prompt versioning,
+  etc. - see `SPECIFICATION.md` sections 5, 12).
+- Any large design trade-off gets discussed before coding, not decided
+  unilaterally mid-implementation.
+
+### Sprint A — Foundation ✅ DONE, FROZEN
+
+Chatbot (extraction + persona + hybrid intent router), Dashboard, Goals,
+Google OAuth (WhatsApp-first linking), Scheduler/recap automation. Only
+bug fixes from here on - no new capability added to this sprint's scope.
+
+### Sprint B — Conversation UX (current sprint)
+
+Goal: the chatbot can explain Nera's product well and holds a
+well-formatted conversation. Scope: Product Knowledge (closed-list FAQ
+about existing capability only, no invented features), Product FAQ, Tone
+& Personality, Intent Audit, Response Formatter. Definition of Done as
+already agreed in this conversation (audit + reformat + closed-list
+product FAQ + tone review, tested against the example questions
+discussed: edit transaksi, dashboard, goals, recap, kenapa login Google).
+
+### Sprint C — Transaction Management
+
+Goal: transactions are actually manageable from WhatsApp, not just
+recordable. Scope: edit transaction via WhatsApp, delete transaction via
+WhatsApp, search transactions, better transaction history, undo last
+transaction.
+
+Architectural notes for when this sprint starts (not decided yet, flagged
+for the pre-coding discussion):
+- Edit/delete need new conversational flows with confirmation before
+  destructive action - likely new states in the existing state machine
+  (`STATES` in `messageHandler.js`), following the same
+  `AWAITING_*` pattern already established, not a parallel mechanism.
+- Likely reuses `pending_context` (already tracks "the last transaction")
+  as the anchor for "edit/delete/undo THAT one" - extending an existing
+  table over introducing a new one, per the reuse principle above.
+- Search is a new intent for the router (rule-based first, same pattern
+  as every other intent so far).
+
+### Sprint D — Financial Organization
+
+Goal: users' finances are organized, not just logged. Scope: Wallet,
+Source Account, Category Management, Budget, Transfer between wallets.
+
+**Recommended build order within this sprint** (dependency-driven, per
+request to sequence this sprint for architectural health):
+
+1. **Category Management** — most independent piece; touches the
+   existing closed `CATEGORIES` enum (`backend/src/config/categories.js`,
+   `frontend/lib/categories.ts`) and the extraction prompt. No dependency
+   on anything else in this sprint.
+2. **Wallet / Source Account** — the foundation the next two items need.
+   Requires a new `wallets` table, a `transactions.wallet_id` column, a
+   default wallet migration path for existing transactions (so nothing
+   becomes orphaned), and extraction prompt changes to infer which
+   wallet a message refers to. Do this before Budget or Transfer.
+3. **Budget** — depends on Category Management (budgets are scoped per
+   category) and benefits from Wallet existing (optionally scoped per
+   wallet too). Sequence after both.
+4. **Transfer between wallets** — the most complex item, strictly
+   requires Wallet to exist first. Real open design question to discuss
+   before coding, not decided now: model a transfer as two linked
+   transactions (an expense from wallet A + an income to wallet B,
+   joined by e.g. a `transfer_group_id`), or as a new dedicated
+   `type: 'transfer'` value. This is exactly the kind of "large trade-off
+   affecting system design" the working principles above call out for a
+   pre-coding discussion.
+
+### Sprint E — Intelligence
+
+Goal: increase the AI's value beyond transaction logging. Scope: AI
+Insight, Monthly Analysis, Spending Trend, Recommendation, Goal
+Prediction. Must be grounded in the user's real transaction data - same
+"AI does not calculate, backend computes, AI phrases" principle already
+established (`SPECIFICATION.md` section 1.2, section 7) - not the model
+inventing patterns that aren't in the data. Sequenced last because it's
+most useful once Sprint C (richer transaction history/search) and Sprint
+D (wallets/budget) exist to analyze - insight quality depends on there
+being organized data to draw on.
+
+### After Sprint E
+
+Full deploy (frontend to Vercel, if not already done earlier for
+practical testing reasons) and internal beta testing begin only once
+Sprint E is complete and the product is stable - this is the new gate,
+replacing "after Sprint A" from the superseded priority order above.
