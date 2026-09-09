@@ -116,6 +116,20 @@ const GREETING_REPLIES = [
 const SMALL_TALK_REPLIES = ['Sip 👍', 'Oke, gas terus!', 'Sama-sama! 😊', 'Siap!'];
 
 /**
+ * Shared fallback for "not a transaction, and not any other recognized
+ * intent" - single source used by BOTH handleUnclearIntent (the router's
+ * unclear intent) and resolveAmbiguousExtraction's no-amount branch.
+ * Previously duplicated verbatim in both places (found in the Sprint B
+ * intent audit) - now one string, so a future wording change only needs
+ * updating here. Reformatted per RESPONSE_FORMATTING.md (short bullets
+ * instead of one dense sentence).
+ */
+const UNCLEAR_FALLBACK_REPLY =
+  'Hmm, aku kurang paham maksudnya nih 🤔\n\n' +
+  '- Mau nyatet transaksi? Sebutin nominalnya, misal "jajan 20rb"\n' +
+  '- Mau tau Nera bisa apa aja? Ketik "bisa apa aja?"';
+
+/**
  * Cheap, deterministic check for "does this message plausibly describe a
  * transaction" - a number/amount-unit, or a common transaction verb.
  * Pure, no I/O. Used by detectIntent as the router-level confidence gate
@@ -173,6 +187,78 @@ export function parseAmount(text) {
   return Number.isNaN(num) ? null : num;
 }
 
+const INDONESIAN_MONTHS = {
+  januari: 1, jan: 1,
+  februari: 2, feb: 2,
+  maret: 3, mar: 3,
+  april: 4, apr: 4,
+  mei: 5,
+  juni: 6, jun: 6,
+  juli: 7, jul: 7,
+  agustus: 8, agu: 8, ags: 8,
+  september: 9, sep: 9, sept: 9,
+  oktober: 10, okt: 10,
+  november: 11, nov: 11,
+  desember: 12, des: 12,
+};
+
+/**
+ * Pure, no I/O. Parses a date the user typed in one of a few common
+ * Indonesian phrasings into an ISO 'YYYY-MM-DD' string, or returns null
+ * if none match. Deliberately scoped ONLY to what the goal-deadline flow
+ * needs (SPECIFICATION.md section 2.9) - not a general natural-language
+ * date understanding feature (found + scoped during the Sprint B intent
+ * audit). Supported forms:
+ *   - ISO as typed:        "2026-12-31"
+ *   - Day + Indonesian month name + year: "31 Desember 2026" / "31 Des 2026"
+ *   - Day/Month/Year or Day-Month-Year (Indonesian DD/MM order): "31/12/2026", "31-12-2026"
+ * Not supported (out of scope - would need real date-understanding
+ * design, not a quick parser addition): relative phrases like "bulan
+ * depan" / "minggu depan" / "besok".
+ */
+export function parseIndonesianDate(text) {
+  const trimmed = text.trim();
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return isValidCalendarDate(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]))
+      ? trimmed
+      : null;
+  }
+
+  const monthNameMatch = trimmed
+    .toLowerCase()
+    .match(/(\d{1,2})\s+([a-z]+)\s+(\d{4})/);
+  if (monthNameMatch) {
+    const day = Number(monthNameMatch[1]);
+    const month = INDONESIAN_MONTHS[monthNameMatch[2]];
+    const year = Number(monthNameMatch[3]);
+    if (month && isValidCalendarDate(year, month, day)) {
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  const slashOrDashMatch = trimmed.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (slashOrDashMatch) {
+    const day = Number(slashOrDashMatch[1]);
+    const month = Number(slashOrDashMatch[2]);
+    const year = Number(slashOrDashMatch[3]);
+    return isValidCalendarDate(year, month, day)
+      ? `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      : null;
+  }
+
+  return null;
+}
+
+/** Pure. Rejects things like "31 Februari" that regex alone can't catch. */
+function isValidCalendarDate(year, month, day) {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 function generateLocalMessageId() {
   return `LOCAL-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -215,8 +301,7 @@ export function resolveAmbiguousExtraction(extraction) {
   // in scope (that's a dashboard action - SPECIFICATION.md section 4.4).
   // Stay in IDLE and ask for clarification instead of guessing.
   return {
-    reply:
-      'Hmm, aku kurang paham maksudnya nih. Kalau mau nyatet transaksi, coba sebutin nominalnya ya (misal "jajan 20rb").',
+    reply: UNCLEAR_FALLBACK_REPLY,
     newState: STATES.IDLE,
     newStateContext: {},
   };
@@ -341,8 +426,7 @@ async function handleSmallTalkIntent() {
 
 async function handleUnclearIntent() {
   return {
-    reply:
-      'Hmm, aku kurang paham maksudnya nih. Kalau mau nyatet transaksi, coba sebutin nominalnya ya (misal "jajan 20rb"), atau ketik "bisa apa aja?" buat liat fitur aku.',
+    reply: UNCLEAR_FALLBACK_REPLY,
     newState: STATES.IDLE,
     newStateContext: {},
   };
@@ -528,20 +612,19 @@ async function handleAwaitingGoalTarget(user, rawText, trace) {
   }
 
   return {
-    reply: 'Oke, deadline-nya kapan? (format: YYYY-MM-DD)',
+    reply: 'Oke, targetnya kapan? Boleh bilang aja kayak "31 Desember 2026" 📅',
     newState: STATES.AWAITING_GOAL_DEADLINE,
     newStateContext: { targetAmount: amount },
   };
 }
 
 async function handleAwaitingGoalDeadline(user, rawText, trace) {
-  const deadline = rawText.trim();
-  const isValidDate = /^\d{4}-\d{2}-\d{2}$/.test(deadline);
+  const deadline = parseIndonesianDate(rawText);
   trace.parsedDeadline = deadline;
 
-  if (!isValidDate) {
+  if (!deadline) {
     return {
-      reply: 'Format tanggalnya coba YYYY-MM-DD ya, misal 2026-12-31.',
+      reply: 'Hmm, tanggalnya belum pas nih. Coba bilang kayak "31 Desember 2026" ya',
       newState: STATES.AWAITING_GOAL_DEADLINE,
       newStateContext: user.state_context,
     };

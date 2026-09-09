@@ -4,6 +4,7 @@ import {
   detectIntent,
   parseDirectionReply,
   parseAmount,
+  parseIndonesianDate,
   resolveAmbiguousExtraction,
   looksLikeTransaction,
   STATES,
@@ -158,5 +159,39 @@ describe('resolveAmbiguousExtraction (pure, no LLM/DB call)', () => {
     };
     const result = resolveAmbiguousExtraction(extraction);
     assert.equal(result.newState, STATES.IDLE);
+  });
+});
+
+describe('parseIndonesianDate (pure, no LLM call) - Sprint B intent audit fix', () => {
+  test('parses ISO format', () => {
+    assert.equal(parseIndonesianDate('2026-12-31'), '2026-12-31');
+  });
+
+  test('parses "DD Month YYYY" with full Indonesian month name', () => {
+    assert.equal(parseIndonesianDate('31 Desember 2026'), '2026-12-31');
+  });
+
+  test('parses "DD Month YYYY" with abbreviated month name', () => {
+    assert.equal(parseIndonesianDate('31 Des 2026'), '2026-12-31');
+    assert.equal(parseIndonesianDate('5 Jan 2027'), '2027-01-05');
+  });
+
+  test('parses DD/MM/YYYY and DD-MM-YYYY', () => {
+    assert.equal(parseIndonesianDate('31/12/2026'), '2026-12-31');
+    assert.equal(parseIndonesianDate('31-12-2026'), '2026-12-31');
+  });
+
+  test('rejects an invalid calendar date (31 Februari)', () => {
+    assert.equal(parseIndonesianDate('31 Februari 2026'), null);
+  });
+
+  test('rejects garbage input', () => {
+    assert.equal(parseIndonesianDate('nggak tau kapan'), null);
+    assert.equal(parseIndonesianDate(''), null);
+  });
+
+  test('rejects relative phrases (explicitly out of scope)', () => {
+    assert.equal(parseIndonesianDate('bulan depan'), null);
+    assert.equal(parseIndonesianDate('besok'), null);
   });
 });
