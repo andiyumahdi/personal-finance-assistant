@@ -358,9 +358,24 @@ async function handleGoalStartIntent() {
 async function handleHelpIntent() {
   return {
     reply:
-      'Aku bantu nyatet pemasukan & pengeluaran kamu lewat chat biasa - nggak perlu format khusus, ' +
-      'tinggal bilang aja misal "jajan 20rb" atau "gaji 5jt". Kalau ada dua transaksi beruntun, tinggal lanjut chat aja. ' +
-      'Ketik "rekap" buat liat ringkasan, atau bilang "mau nabung buat ..." buat bikin target nabung. Aku dibikin sama developer kalian sendiri buat bantu urusan keuangan harian 😄',
+      '😊 *Nera bisa bantu kamu:*\n\n' +
+      '- Catat transaksi - tinggal chat, misal "jajan 20rb"\n' +
+      '- Rekap - ketik "rekap" kapan aja\n' +
+      '- Goals - bilang "mau nabung buat ..."\n' +
+      '- Dashboard - ketik "dashboard" buat connect\n\n' +
+      'Nggak perlu format khusus, ngobrol biasa aja 👍',
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+/** AI-generated, grounded in the locked product knowledge base - see aiProvider.answerProductQuestion(). */
+async function handleProductQuestionIntent(user, rawText, trace) {
+  const answer = await aiProvider.answerProductQuestion(rawText);
+  trace.persona = answer;
+
+  return {
+    reply: answer.text,
     newState: STATES.IDLE,
     newStateContext: {},
   };
@@ -529,6 +544,7 @@ const INTENT_HANDLERS = {
   goal_start: handleGoalStartIntent,
   help: handleHelpIntent,
   dashboard_link: handleDashboardLinkIntent,
+  product_question: handleProductQuestionIntent,
   greeting: handleGreetingIntent,
   small_talk: handleSmallTalkIntent,
   transaction: handleTransactionIntent,

@@ -23,6 +23,7 @@ export const INTENT_CATEGORIES = [
   'goal_start',
   'help',
   'dashboard_link',
+  'product_question',
   'greeting',
   'small_talk',
   'transaction',
@@ -35,6 +36,7 @@ Categories and what they mean:
 - "greeting": the user is opening the conversation or greeting the bot, nothing more.
 - "dashboard_link": the user wants to open/connect to the web dashboard (e.g. asking to log in or access the dashboard).
 - "help": the user wants to understand what the bot can do, how to use it, or who/what it is - they are asking about the assistant itself, not about their own finances.
+- "product_question": the user asks something SPECIFIC about a Nera feature (e.g. "bisa edit transaksi?", "dashboard buat apa?", "kenapa harus login pakai WhatsApp?") - more specific than "help"'s general capability overview.
 - "recap": the user wants to know something about their OWN recorded finances - a summary, balance, spending pattern, whether they're overspending, etc.
 - "goal_start": the user expresses wanting to start saving toward something (a savings goal), without yet giving an amount or deadline.
 - "transaction": the user is describing a financial transaction - money they spent, received, or moved - that should be recorded.

@@ -15,6 +15,11 @@ import {
   buildPersonaPrompt,
 } from './personaPrompt.js';
 import {
+  PRODUCT_QUESTION_PROMPT_VERSION,
+  PRODUCT_QUESTION_SYSTEM_INSTRUCTION,
+  buildProductQuestionPrompt,
+} from './productQuestionPrompt.js';
+import {
   INTENT_CLASSIFIER_PROMPT_VERSION,
   INTENT_CLASSIFIER_SYSTEM_INSTRUCTION,
   INTENT_CLASSIFIER_RESPONSE_SCHEMA,
@@ -142,6 +147,32 @@ export const aiProvider = {
       return 'unclear';
     }
   },
+
+  /**
+   * Answers a question about Nera's own product/features, grounded in
+   * the embedded knowledge base (productQuestionPrompt.js - mirrors
+   * docs/PRODUCT_KNOWLEDGE.md). Fails with a generic apology on error
+   * rather than throwing - a product question is never on a critical
+   * path (transaction recording), so degrading gracefully is preferable
+   * to crashing the pipeline.
+   */
+  async answerProductQuestion(rawText) {
+    const prompt = buildProductQuestionPrompt(rawText);
+    const model = process.env.GEMINI_MODEL_PERSONA || 'gemini-3.1-flash-lite';
+
+    try {
+      const text = await callGemini(prompt, {
+        model,
+        systemInstruction: PRODUCT_QUESTION_SYSTEM_INSTRUCTION,
+      });
+      return { text: text.trim(), prompt_version: PRODUCT_QUESTION_PROMPT_VERSION };
+    } catch {
+      return {
+        text: 'Waduh, lagi ada gangguan nih buat jawab itu. Coba tanya lagi bentar ya 🙏',
+        prompt_version: PRODUCT_QUESTION_PROMPT_VERSION,
+      };
+    }
+  },
 };
 
-export { INTENT_CLASSIFIER_PROMPT_VERSION };
+export { INTENT_CLASSIFIER_PROMPT_VERSION, PRODUCT_QUESTION_PROMPT_VERSION };
