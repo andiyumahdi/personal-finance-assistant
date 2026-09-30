@@ -128,3 +128,28 @@ export async function restoreTransactionById(id, userId) {
   if (error) throw error;
   return data;
 }
+
+/**
+ * Sprint D1 rename cascade: re-points the caller's ACTIVE transactions
+ * from `oldName` to `newName` so the invariant "every active transaction's
+ * category exists in the active category list" survives a rename.
+ * Soft-deleted rows are deliberately excluded (.is deleted_at null) so
+ * historical labels are never rewritten as a side effect - the same
+ * no-history-rewriting rule the delete guard follows. user_id is scoped
+ * in the query itself, so one user's rename can never touch another
+ * user's rows. Returns how many rows changed (0 is a normal outcome).
+ */
+export async function renameCategoryForUserTransactions(userId, oldName, newName) {
+  assertUserScope(userId, 'renameCategoryForUserTransactions');
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('transactions')
+    .update({ category: newName })
+    .eq('user_id', userId)
+    .eq('category', oldName)
+    .is('deleted_at', null)
+    .select('id');
+
+  if (error) throw error;
+  return Array.isArray(data) ? data.length : 0;
+}

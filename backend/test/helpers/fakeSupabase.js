@@ -9,6 +9,9 @@
 //     reject on query errors);
 //   - .single() resolves error=PGRST116 when zero rows match;
 //   - .maybeSingle() resolves data=null instead;
+//   - .select(cols, { count: 'exact', head: true }) resolves
+//     { data: null, count: n } - the aggregate head-count used by the D1
+//     delete guard;
 //   - every call is recorded in db.calls so tests can assert things like
 //     "search only ever issued SELECTs" (read-only proof).
 //
@@ -40,6 +43,10 @@ const TABLE_DEFAULTS = {
   }),
   pending_context: () => ({}),
   message_log: () => ({ processed_at: nowIso() }),
+  user_categories: () => ({
+    id: crypto.randomUUID(),
+    created_at: nowIso(),
+  }),
   goals: () => ({
     id: crypto.randomUUID(),
     status: 'active',
@@ -91,10 +98,12 @@ class FakeQuery {
     this.wantRows = false;
     this.mode = 'many';
     this.orderSpec = null;
+    this.headMode = false;
   }
 
-  select() {
+  select(columns, options) {
     this.wantRows = true;
+    if (options && options.head) this.headMode = true;
     return this;
   }
 
@@ -211,6 +220,9 @@ class FakeQuery {
 
     switch (this.op) {
       case 'select': {
+        if (this.headMode) {
+          return { data: null, count: matched.length, error: null };
+        }
         let out = matched;
         if (this.orderSpec) {
           const { col, ascending } = this.orderSpec;
