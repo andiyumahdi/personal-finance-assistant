@@ -23,10 +23,11 @@ import * as transactionQueries from '../db/queries/transactions.js';
 import * as messageLogQueries from '../db/queries/messageLog.js';
 import { aiProvider } from '../ai/aiProvider.js';
 import * as transactionsDomain from '../domain/transactions.js';
+import * as categoriesDomain from '../domain/categories.js';
 import * as goalsDomain from '../domain/goals.js';
 import * as contextDomain from '../domain/context.js';
 import { calculateTotals } from '../domain/summary.js';
-import { CATEGORIES } from '../config/categories.js';
+import { CATEGORIES, isDefaultCategory } from '../config/categories.js';
 
 export const STATES = {
   IDLE: 'IDLE',
@@ -38,6 +39,11 @@ export const STATES = {
   // no parallel mechanism.
   AWAITING_DELETE_CONFIRMATION: 'AWAITING_DELETE_CONFIRMATION',
   AWAITING_EDIT_UPDATE: 'AWAITING_EDIT_UPDATE',
+  // Sprint D1 (Category Management): delete-of-a-category confirmation,
+  // same AWAITING_* pattern again - the ONLY new state in D1 (create and
+  // rename execute immediately; only deletion is destructive enough to
+  // require an explicit "ya").
+  AWAITING_CATEGORY_CONFIRM: 'AWAITING_CATEGORY_CONFIRM',
 };
 
 // ---------------------------------------------------------------------------
@@ -100,6 +106,19 @@ const SEARCH_KEYWORDS = ['cari', 'nyari', 'search'];
 // Makes "ganti ..." an edit request. "ganti" ALONE is not enough on purpose:
 // "ganti oli 200rb" is a new transaction, not an edit of an existing one.
 const EDIT_CHANGE_HINTS = /\b(jadi|jadiin|nominal|jumlah|kategori|harga)\b/;
+
+// Sprint D1 (Category Management) routing signals. Like Sprint C's, these
+// run FIRST in detectIntent - "hapus kategori Kopi" would otherwise be
+// swallowed by the transaction-delete rule and "ganti nama kategori ..."
+// by the edit rule. The word "kategori" is REQUIRED (matches "kategorinya"
+// too), so none of these can steal a message that merely contains a verb.
+const CATEGORY_WORD_PATTERN = /\bkategori(?:nya)?\b/;
+const CATEGORY_CREATE_VERBS = ['tambah', 'tambahin', 'buat', 'bikin'];
+const CATEGORY_DELETE_VERBS = ['hapus', 'delete', 'buang'];
+// Rename ONLY via its dedicated forms: a bare "ganti kategori jadi X" must
+// keep routing to transaction_edit (change a TRANSACTION's category),
+// exactly as pre-D1 routing asserted.
+const CATEGORY_RENAME_PATTERN = /\brename\b|\bganti\s+nama\b/;
 
 // Signals that a message is plausibly about a transaction - checked BEFORE
 // calling Gemini extraction, so an obviously non-financial message doesn't
@@ -191,6 +210,39 @@ const UNDO_ALREADY_ACTIVE_REPLY = 'Kayaknya udah pernah kebalik deh, nggak perlu
 const UNDO_MISSING_REPLY = 'Waduh, transaksi yang mau dibalikin udah nggak ketemu nih 🙏';
 const UNDO_FAILED_REPLY = 'Lagi belum bisa ngebalikinnya nih, coba lagi bentar ya 🙏';
 
+// ---------------------------------------------------------------------------
+// Sprint D1 static replies (D1 Category Management) - same convention as
+// the Sprint C block above: string literals on purpose, not persona-
+// generated. Tone follows docs/TONE_AND_PERSONALITY.md and the tier rules
+// in docs/RESPONSE_FORMATTING.md (Question = one direct ask, max ~5
+// bullets). Dynamic outcomes (name/count dependent) are built inline in
+// the handlers, mirroring performDelete/applyEdit.
+// ---------------------------------------------------------------------------
+const CATEGORY_USAGE_HELP_REPLY =
+  'Mau atur kategori? Bisa lewat chat:\n' +
+  '- "buat kategori Kopi Langganan"\n' +
+  '- "ganti nama kategori Kopi jadi Kopi Pagi"\n' +
+  '- "hapus kategori Kopi"';
+const CATEGORY_CREATE_ASK_REPLY =
+  'Mau bikin kategori apa? Sebutin namanya ya, misal "buat kategori Kopi Langganan".';
+const CATEGORY_RENAME_ASK_REPLY =
+  'Mau ganti nama kategori apa jadi apa? Misal "ganti nama kategori Kopi jadi Kopi Pagi".';
+const CATEGORY_DELETE_ASK_REPLY =
+  'Mau hapus kategori apa? Sebutin namanya ya, misal "hapus kategori Kopi".';
+const CATEGORY_INVALID_NAME_REPLY =
+  'Hmm, nama itu belum bisa dipakai 🙏 Minimal 2 karakter, maksimal 40, huruf/angka/spasi aja (misal "Kopi Langganan").';
+const CATEGORY_DEFAULT_NAME_REPLY =
+  'Itu kategori bawaan, jadi nggak bisa diduplikasi atau diganti namanya 🙏';
+const CATEGORY_TOO_MANY_REPLY =
+  'Wah, kategori kamu udah penuh (50). Hapus dulu yang nggak dipakai ya.';
+const CATEGORY_RENAME_UNCHANGED_REPLY = 'Namanya emang udah gitu kok 👌';
+const CATEGORY_NOT_FOUND_REPLY =
+  'Nggak ketemu kategorinya nih 🙏 Cek dulu nama kategorinya ya.';
+const CATEGORY_DELETE_DEFAULT_REPLY = 'Kategori bawaan nggak bisa dihapus ya 🙏';
+const CATEGORY_DELETE_REASK_REPLY =
+  'Masih mau hapus kategorinya? Balas "ya" buat hapus atau "batal" buat batalin.';
+const CATEGORY_DELETE_CANCEL_REPLY = 'Oke, nggak jadi dihapus 👍';
+
 /**
  * Cheap, deterministic check for "does this message plausibly describe a
  * transaction" - a number/amount-unit, or a common transaction verb.
@@ -247,6 +299,23 @@ function isSearchRequest(lower) {
 }
 
 /**
+ * Sprint D1: is this message about creating/renaming/deleting a CATEGORY
+ * (as opposed to editing a transaction's category or deleting a
+ * transaction)? Deliberately narrow - requires the word "kategori" PLUS a
+ * dedicated verb, and goal-language keeps its own routing exactly like the
+ * Sprint C rules do (isExcludedFromSprintC).
+ */
+function isCategoryManageRequest(lower) {
+  if (isExcludedFromSprintC(lower)) return false;
+  if (!CATEGORY_WORD_PATTERN.test(lower)) return false;
+  if (CATEGORY_RENAME_PATTERN.test(lower)) return true;
+  return (
+    CATEGORY_CREATE_VERBS.some((verb) => containsWord(lower, verb)) ||
+    CATEGORY_DELETE_VERBS.some((verb) => containsWord(lower, verb))
+  );
+}
+
+/**
  * Cheap, deterministic intent pre-filter. Runs BEFORE any Gemini call so
  * that obviously-non-transaction messages (recap requests, greetings,
  * help questions, small talk) don't waste an extraction call - and,
@@ -254,16 +323,21 @@ function isSearchRequest(lower) {
  * nominalnya" fallback for things that were never meant to be a
  * transaction in the first place.
  *
- * Ordering: Sprint C intents (undo/delete/edit/search) run FIRST - they
- * are explicit action verbs that must win over the older keyword blocks
- * ("cari pengeluaran 20rb" would otherwise match recap's "pengeluaran";
- * "hapus yang 25rb" would otherwise hit the transaction digit gate). The
- * remaining order (recap -> goal -> help -> dashboard -> transaction ->
- * greeting -> small_talk) is unchanged from Sprint B.
+ * Ordering: Sprint D1's category_manage runs first - it needs the word
+ * "kategori" plus a dedicated verb, and would otherwise be swallowed by
+ * the transaction rules below ("hapus kategori Kopi" -> delete,
+ * "ganti nama kategori ..." -> edit). Then Sprint C intents
+ * (undo/delete/edit/search) - they are explicit action verbs that must
+ * win over the older keyword blocks ("cari pengeluaran 20rb" would
+ * otherwise match recap's "pengeluaran"; "hapus yang 25rb" would
+ * otherwise hit the transaction digit gate). The remaining order (recap
+ * -> goal -> help -> dashboard -> transaction -> greeting -> small_talk)
+ * is unchanged from Sprint B.
  */
 export function detectIntent(rawText) {
   const lower = rawText.toLowerCase().trim();
 
+  if (isCategoryManageRequest(lower)) return 'category_manage';
   if (isUndoRequest(lower)) return 'transaction_undo';
   if (isDeleteRequest(lower)) return 'transaction_delete';
   if (isEditRequest(lower)) return 'transaction_edit';
@@ -523,17 +597,73 @@ export function looksLikeTargetReply(rawText) {
   return /^(yang|nomor|no\b|\d)/i.test(String(rawText ?? '').trim());
 }
 
+// ---------------------------------------------------------------------------
+// Sprint D1 pure helpers - no I/O, directly unit-testable.
+// ---------------------------------------------------------------------------
+
+/**
+ * Parses a category_manage message into one of:
+ *   { action: 'create'|'delete', name }            - complete
+ *   { action: 'rename', oldName, newName }         - complete
+ *   { action: 'create'|'delete'|'rename', incomplete: true } - verb found
+ *     but the name (or the "jadi <new>" part) is missing - caller asks.
+ *   { action: null } - not a category command (detection was wrong, or the
+ *     classifier routed a vague message here).
+ * Matching runs on the RAW text so the extracted names keep the user's
+ * original casing ("Kopi Langganan", not "kopi langganan"); only the verb
+ * checks are case-insensitive. Word order must follow the documented
+ * command shapes: "<verb> kategori <name>" / "ganti nama kategori <old>
+ * jadi <new>".
+ */
+export function parseCategoryManageMessage(rawText) {
+  const raw = String(rawText ?? '').trim();
+  const marker = CATEGORY_WORD_PATTERN.exec(raw);
+  if (!marker) return { action: null };
+
+  const prefix = raw.slice(0, marker.index);
+  const prefixLower = prefix.toLowerCase();
+  const tail = raw
+    .slice(marker.index + marker[0].length)
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .replace(/[.!?]+$/u, '')
+    .trim();
+
+  if (CATEGORY_RENAME_PATTERN.test(prefixLower)) {
+    const split = tail.split(/\b(jadi|menjadi)\b/i);
+    if (split.length < 3) return { action: 'rename', incomplete: true };
+    const oldName = split[0].trim();
+    const newName = split.slice(2).join(' ').trim();
+    if (!oldName || !newName) return { action: 'rename', incomplete: true };
+    return { action: 'rename', oldName, newName };
+  }
+
+  if (CATEGORY_DELETE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    return tail ? { action: 'delete', name: tail } : { action: 'delete', incomplete: true };
+  }
+
+  if (CATEGORY_CREATE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    return tail ? { action: 'create', name: tail } : { action: 'create', incomplete: true };
+  }
+
+  return { action: null };
+}
+
 const EDIT_VERB_PATTERN = /\b(ubah|edit|rubah|ganti)\b/;
 
-/** Resolves a category name out of free text ("makanan" -> "Makanan & Minuman"), or null. */
-function matchCategoryName(text) {
+/**
+ * Resolves a category name out of free text ("makanan" -> "Makanan & Minuman"), or null.
+ * `categories` defaults to the built-in ten; Sprint D1 callers that have
+ * the user's active list (defaults + custom rows) pass it in, so a custom
+ * category resolves the same way a default does.
+ */
+export function matchCategoryName(text, categories = CATEGORIES) {
   const tokens = String(text ?? '')
     .toLowerCase()
     .split(/[^a-z0-9&]+/)
     .filter((token) => token.length >= 4);
   if (tokens.length === 0) return null;
-  for (const category of CATEGORIES) {
-    const name = category.toLowerCase();
+  for (const category of categories) {
+    const name = String(category).toLowerCase();
     if (tokens.some((token) => name.includes(token) || token.includes(name))) return category;
   }
   return null;
@@ -550,8 +680,12 @@ function matchCategoryName(text) {
  * edit verb ("ubah nominalnya ke 25rb"), the number in the message is the
  * NEW value, so it is removed from the target criteria (otherwise we'd
  * search for a transaction that already has the new amount).
+ *
+ * `activeCategories` (Sprint D1) is the category list the change may name
+ * - the user's active list (defaults + custom) when available, or the
+ * built-in defaults for the pure/heuristic call sites that have no user.
  */
-export function parseEditMessage(rawText) {
+export function parseEditMessage(rawText, activeCategories = CATEGORIES) {
   const lower = String(rawText ?? '').toLowerCase();
   const change = {};
   let invalidAmount = false;
@@ -562,7 +696,7 @@ export function parseEditMessage(rawText) {
     const left = lower.slice(0, jadiMatch.index);
     const right = lower.slice(jadiMatch.index + jadiMatch[0].length);
 
-    const category = matchCategoryName(right);
+    const category = matchCategoryName(right, activeCategories);
     if (category) change.category = category;
 
     if (/\d/.test(right)) {
@@ -588,7 +722,7 @@ export function parseEditMessage(rawText) {
       // "ubah transaksi makan" would be misread as a category change.
       const tail = lower.split(/kategori(?:nya)?\s*(?:jadi|ke)?\s*/)[1];
       if (tail) {
-        const category = matchCategoryName(tail);
+        const category = matchCategoryName(tail, activeCategories);
         if (category) change.category = category;
       }
     }
@@ -603,14 +737,16 @@ export function parseEditMessage(rawText) {
 /**
  * Validates a parsed edit change. Returns { amount?, category? } or null
  * when there is nothing usable - never a partial-garbage object, so a bad
- * input can't half-apply.
+ * input can't half-apply. `allowed` (Sprint D1) is the category list the
+ * change may use: the user's active list where available, defaults-only
+ * for the pure call sites that run without a user.
  */
-export function normalizeEditChange(rawChange) {
+export function normalizeEditChange(rawChange, allowed = CATEGORIES) {
   const out = {};
   if (rawChange && rawChange.amount !== undefined && rawChange.amount !== null) {
     if (Number.isFinite(rawChange.amount) && rawChange.amount > 0) out.amount = rawChange.amount;
   }
-  if (rawChange && rawChange.category && CATEGORIES.includes(rawChange.category)) {
+  if (rawChange && rawChange.category && allowed.includes(rawChange.category)) {
     out.category = rawChange.category;
   }
   return Object.keys(out).length > 0 ? out : null;
@@ -874,9 +1010,14 @@ async function handleTransactionIntent(user, rawText, trace) {
     }
   }
 
+  // Sprint D1: pass the user's active category list (defaults + custom)
+  // so extraction is ALLOWED to assign a custom name - resolveAllowed-
+  // Categories inside extract() always keeps the ten defaults too.
+  const activeCategories = await getActiveCategoryNames(user.id);
   const extraction = await aiProvider.extract(
     rawText,
     lastTransaction ? { lastTransaction } : null,
+    activeCategories,
   );
   trace.extraction = extraction;
 
@@ -1160,10 +1301,14 @@ async function applyEdit(user, target, change, trace) {
  * reply - Question tier is a single direct ask).
  */
 async function runEditPhase(user, rawText, ctx, trace) {
-  const parsed = parseEditMessage(rawText);
+  // Sprint D1: parse and validate the change against THIS user's active
+  // category list, so "jadi <custom name>" resolves exactly like a default
+  // does (defaults-only behavior for users with no custom categories).
+  const activeCategories = await getActiveCategoryNames(user.id);
+  const parsed = parseEditMessage(rawText, activeCategories);
   trace.editParsed = parsed;
 
-  const change = normalizeEditChange(parsed.change);
+  const change = normalizeEditChange(parsed.change, activeCategories);
 
   let target = null;
   if (ctx.editTargetId) {
@@ -1262,6 +1407,239 @@ async function handleTransactionUndo(user, _rawText, trace) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Sprint D1 (Category Management) handlers - same (user, rawText, trace)
+// signature and the same rules as the blocks above: static replies (no
+// persona call), create/rename execute immediately, and delete is the
+// only flow that gets a confirmation state (AWAITING_CATEGORY_CONFIRM)
+// because it is the only destructive one.
+// ---------------------------------------------------------------------------
+
+/** The user's full active category list: ten defaults + their own custom rows. */
+async function getActiveCategoryNames(userId) {
+  const { defaults, custom } = await categoriesDomain.listCategories(userId);
+  return [...defaults, ...custom.map((row) => row.name)];
+}
+
+/**
+ * EXACT (case-insensitive) resolution of a manage-command target against
+ * the defaults + the user's own rows - deliberately NOT the fuzzy
+ * matchCategoryName, because a destructive or cascading action must never
+ * fire on a prefix collision ("Kopi" vs "Kopi Langganan").
+ * Returns { kind: 'custom', row } | { kind: 'default', name } |
+ * { kind: 'not_found', name } | { kind: 'empty' }.
+ */
+async function resolveCategoryForManage(userId, rawName) {
+  const name = categoriesDomain.normalizeCategoryName(rawName);
+  if (!name) return { kind: 'empty' };
+  if (isDefaultCategory(name)) return { kind: 'default', name };
+  const { custom } = await categoriesDomain.listCategories(userId);
+  const row = custom.find((r) => r.name.toLowerCase() === name.toLowerCase());
+  if (row) return { kind: 'custom', row };
+  return { kind: 'not_found', name };
+}
+
+async function runCategoryCreate(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name) {
+    return { reply: CATEGORY_CREATE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const result = await categoriesDomain.createCategory(user.id, parsed.name);
+  trace.categoryOutcome = result.status;
+
+  if (result.status === 'created') {
+    trace.dbAction = { type: 'insert_user_category', category: result.category };
+    return {
+      reply: `Oke, kategori "${result.category.name}" udah kubikin 👍`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  const staticReplies = {
+    invalid_name: CATEGORY_INVALID_NAME_REPLY,
+    duplicate_default: CATEGORY_DEFAULT_NAME_REPLY,
+    too_many: CATEGORY_TOO_MANY_REPLY,
+  };
+  if (staticReplies[result.status]) {
+    return { reply: staticReplies[result.status], newState: STATES.IDLE, newStateContext: {} };
+  }
+  // duplicate - including a unique-index race caught at insert time
+  const name = categoriesDomain.normalizeCategoryName(parsed.name) || parsed.name;
+  return {
+    reply: `Udah ada kategori "${name}" nih. Coba nama lain ya.`,
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+async function runCategoryRename(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.oldName || !parsed.newName) {
+    return { reply: CATEGORY_RENAME_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const resolution = await resolveCategoryForManage(user.id, parsed.oldName);
+  if (resolution.kind === 'empty') {
+    return { reply: CATEGORY_RENAME_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind === 'default') {
+    return { reply: CATEGORY_DEFAULT_NAME_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind !== 'custom') {
+    return { reply: CATEGORY_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const result = await categoriesDomain.renameCategory(user.id, resolution.row.id, parsed.newName);
+  trace.categoryOutcome = result.status;
+
+  if (result.status === 'renamed') {
+    trace.dbAction = {
+      type: 'rename_user_category',
+      from: result.from,
+      to: result.to,
+      transactionsUpdated: result.transactionsUpdated,
+    };
+    const cascadeNote =
+      result.transactionsUpdated > 0
+        ? `\n${result.transactionsUpdated} transaksi aktif ikut keganti otomatis.`
+        : '';
+    return {
+      reply: `Oke, kategori "${result.from}" udah ganti jadi "${result.to}" ✅${cascadeNote}`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (result.status === 'unchanged') {
+    return { reply: CATEGORY_RENAME_UNCHANGED_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'invalid_name') {
+    return { reply: CATEGORY_INVALID_NAME_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'duplicate_default') {
+    return { reply: CATEGORY_DEFAULT_NAME_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'duplicate') {
+    const name = categoriesDomain.normalizeCategoryName(parsed.newName) || parsed.newName;
+    return {
+      reply: `Udah ada kategori "${name}" nih. Coba nama lain ya.`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  // not_found: the row vanished between resolution and rename (race)
+  return { reply: CATEGORY_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+async function runCategoryDelete(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name) {
+    return { reply: CATEGORY_DELETE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const resolution = await resolveCategoryForManage(user.id, parsed.name);
+  if (resolution.kind === 'empty') {
+    return { reply: CATEGORY_DELETE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind === 'default') {
+    return { reply: CATEGORY_DELETE_DEFAULT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind !== 'custom') {
+    return { reply: CATEGORY_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // Read-only pre-check: the domain counts ACTIVE transactions only, so
+  // soft-deleted history neither blocks nor gets modified by a delete.
+  const usage = await categoriesDomain.getCategoryUsage(user.id, resolution.row.id);
+  trace.categoryUsage = usage;
+  if (usage.status !== 'ok') {
+    return { reply: CATEGORY_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (usage.activeCount > 0) {
+    // In use right now: reject immediately WITH the count, no confirmation.
+    return {
+      reply:
+        `"${resolution.row.name}" masih dipakai ${usage.activeCount} transaksi aktif, ` +
+        'jadi nggak bisa dihapus 🙏 Hapus atau ubah transaksinya dulu ya.',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  return {
+    reply:
+      `Hapus kategori "${resolution.row.name}"?\n\n` +
+      'Nggak ada transaksi aktif yang pakainya (catatan lama tetap aman). ' +
+      'Balas "ya" buat hapus, atau "batal" buat batalin.',
+    newState: STATES.AWAITING_CATEGORY_CONFIRM,
+    newStateContext: {
+      pendingCategoryId: resolution.row.id,
+      categoryName: resolution.row.name,
+    },
+  };
+}
+
+async function handleCategoryManageIntent(user, rawText, trace) {
+  const parsed = parseCategoryManageMessage(rawText);
+  trace.categoryParsed = parsed;
+
+  if (parsed.action === 'create') return runCategoryCreate(user, parsed, trace);
+  if (parsed.action === 'rename') return runCategoryRename(user, parsed, trace);
+  if (parsed.action === 'delete') return runCategoryDelete(user, parsed, trace);
+  return { reply: CATEGORY_USAGE_HELP_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+/**
+ * Commit phase of the category delete flow. deleteCategory re-counts
+ * internally on this call - that IS the commit-time guard: a transaction
+ * recorded between the confirmation question and this "ya" cancels the
+ * delete with an accurate count instead of silently breaking the
+ * "active transaction's category exists in the active list" invariant.
+ * "batal"/"tidak" cancels without touching anything.
+ */
+async function handleAwaitingCategoryConfirm(user, rawText, trace) {
+  const ctx = user.state_context || {};
+  const confirmation = parseConfirmationReply(rawText);
+
+  if (confirmation === 'yes') {
+    const result = await categoriesDomain.deleteCategory(user.id, ctx.pendingCategoryId);
+    trace.categoryOutcome = result.status;
+
+    if (result.status === 'deleted') {
+      trace.dbAction = { type: 'delete_user_category', name: result.name };
+      return {
+        reply: `Oke, kategori "${result.name}" udah kuhapus 👍`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    if (result.status === 'in_use') {
+      return {
+        reply:
+          `Eh, ternyata "${result.name}" udah dipakai ${result.activeCount} transaksi aktif — ` +
+          'jadinya nggak jadi kuhapus 🙏',
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    // not_found: the category vanished while the confirmation was open.
+    return { reply: CATEGORY_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  if (confirmation === 'no') {
+    return { reply: CATEGORY_DELETE_CANCEL_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // Hand-back rule, same as AWAITING_DELETE_CONFIRMATION's confirm phase:
+  // any other recognized intent (including a fresh category command)
+  // drops the pending confirmation and re-routes; only 'unclear' re-asks.
+  if (detectIntent(rawText) !== 'unclear') return handleIdle(user, rawText, trace);
+
+  return {
+    reply: CATEGORY_DELETE_REASK_REPLY,
+    newState: STATES.AWAITING_CATEGORY_CONFIRM,
+    newStateContext: ctx,
+  };
+}
+
 // Dispatch table: to add a new intent later, write one handler above with
 // the (user, rawText, trace) signature and add one line here - handleIdle
 // itself never needs to change. Exported so tests can assert it stays in
@@ -1279,6 +1657,7 @@ export const INTENT_HANDLERS = {
   transaction_edit: handleTransactionEdit,
   transaction_delete: handleTransactionDelete,
   transaction_undo: handleTransactionUndo,
+  category_manage: handleCategoryManageIntent,
   unclear: handleUnclearIntent,
 };
 
@@ -1457,7 +1836,10 @@ async function handleAwaitingEditUpdate(user, rawText, trace) {
   if (index && Array.isArray(ctx.candidateIds) && index <= ctx.candidateIds.length) {
     const resolution = await resolveTargetFromReply(user, rawText, ctx, trace);
     if (resolution.status === 'one') {
-      const changeToApply = normalizeEditChange(ctx.pendingChange);
+      // Re-validated against the user's active list (Sprint D1): a pending
+      // custom category must survive this second normalization pass.
+      const activeCategories = await getActiveCategoryNames(user.id);
+      const changeToApply = normalizeEditChange(ctx.pendingChange, activeCategories);
       if (changeToApply) return applyEdit(user, resolution.target, changeToApply, trace);
       return {
         reply: EDIT_ASK_CHANGE_REPLY,
@@ -1521,6 +1903,9 @@ export async function handleIncomingMessage(phoneNumber, rawText, waMessageId = 
         break;
       case STATES.AWAITING_EDIT_UPDATE:
         result = await handleAwaitingEditUpdate(user, rawText, trace);
+        break;
+      case STATES.AWAITING_CATEGORY_CONFIRM:
+        result = await handleAwaitingCategoryConfirm(user, rawText, trace);
         break;
       case STATES.IDLE:
       default:
