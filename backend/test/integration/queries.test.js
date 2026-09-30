@@ -19,6 +19,7 @@ import * as transactionQueries from '../../src/db/queries/transactions.js';
 import * as goalQueries from '../../src/db/queries/goals.js';
 import * as messageLogQueries from '../../src/db/queries/messageLog.js';
 import * as pendingContextQueries from '../../src/db/queries/pendingContext.js';
+import * as transactionsDomain from '../../src/domain/transactions.js';
 
 const testPhoneNumber = `TEST-${Date.now()}`;
 let testUserId;
@@ -100,7 +101,7 @@ describe('transactions query layer', () => {
   });
 
   test('listTransactions excludes soft-deleted rows by default', async () => {
-    await transactionQueries.softDeleteTransactionById(createdTransactionId);
+    await transactionQueries.softDeleteTransactionById(createdTransactionId, testUserId);
     const rows = await transactionQueries.listTransactions(testUserId);
     const stillVisible = rows.some((r) => r.id === createdTransactionId);
     assert.equal(stillVisible, false);
@@ -110,6 +111,218 @@ describe('transactions query layer', () => {
     const rows = await transactionQueries.listTransactions(testUserId, { includeDeleted: true });
     const found = rows.some((r) => r.id === createdTransactionId);
     assert.equal(found, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sprint C (transaction management): the user-scoped query layer, against
+// the REAL database. These are the live-DB counterparts of the ownership
+// tests in test/unit/transactionsQueries.test.js (which run without
+// credentials against an in-memory fake).
+// ---------------------------------------------------------------------------
+describe('Sprint C: transaction queries are user-scoped (ownership)', () => {
+  let foreignUserId;
+  let ownTxId;
+  let foreignTxId;
+
+  before(async () => {
+    const foreign = await userQueries.createUser(`TEST-FOREIGN-${Date.now()}`);
+    foreignUserId = foreign.id;
+
+    const own = await transactionQueries.insertTransaction({
+      user_id: testUserId,
+      type: 'expense',
+      amount: 12345,
+      category: 'Lainnya',
+      raw_text: 'TEST sprintC own row',
+      source_message_id: `TEST-SC-OWN-${Date.now()}`,
+    });
+    ownTxId = own.id;
+
+    const foreignTx = await transactionQueries.insertTransaction({
+      user_id: foreignUserId,
+      type: 'expense',
+      amount: 54321,
+      category: 'Lainnya',
+      raw_text: 'TEST sprintC foreign row',
+      source_message_id: `TEST-SC-FOREIGN-${Date.now()}`,
+    });
+    foreignTxId = foreignTx.id;
+  });
+
+  after(async () => {
+    const supabase = (await import('../../src/db/supabaseClient.js')).getSupabaseClient();
+    await supabase.from('transactions').delete().eq('id', ownTxId);
+    await supabase.from('transactions').delete().eq('id', foreignTxId);
+    await supabase.from('users').delete().eq('id', foreignUserId);
+  });
+
+  test('getTransactionById returns the caller own row', async () => {
+    const tx = await transactionQueries.getTransactionById(ownTxId, testUserId);
+    assert.equal(tx.id, ownTxId);
+  });
+
+  test("getTransactionById returns null for another user's transaction", async () => {
+    const tx = await transactionQueries.getTransactionById(foreignTxId, testUserId);
+    assert.equal(tx, null);
+  });
+
+  test("updateTransactionById refuses another user's row (untouched)", async () => {
+    const result = await transactionQueries.updateTransactionById(foreignTxId, testUserId, {
+      amount: 1,
+    });
+    assert.equal(result, null);
+    const row = await transactionQueries.getTransactionById(foreignTxId, foreignUserId);
+    assert.equal(row.amount, 54321);
+  });
+
+  test("softDeleteTransactionById refuses another user's row (untouched)", async () => {
+    const result = await transactionQueries.softDeleteTransactionById(foreignTxId, testUserId);
+    assert.equal(result, null);
+    const row = await transactionQueries.getTransactionById(foreignTxId, foreignUserId);
+    assert.equal(row.deleted_at, null);
+  });
+
+  test('restoreTransactionById revives own soft-deleted row', async () => {
+    await transactionQueries.softDeleteTransactionById(ownTxId, testUserId);
+    const restored = await transactionQueries.restoreTransactionById(ownTxId, testUserId);
+    assert.ok(restored);
+    assert.equal(restored.deleted_at, null);
+  });
+
+  test("restoreTransactionById refuses another user's deleted row (stays deleted)", async () => {
+    await transactionQueries.softDeleteTransactionById(foreignTxId, foreignUserId);
+    const result = await transactionQueries.restoreTransactionById(foreignTxId, testUserId);
+    assert.equal(result, null);
+    const row = await transactionQueries.getTransactionById(foreignTxId, foreignUserId);
+    assert.ok(row.deleted_at, 'foreign row must still be deleted');
+  });
+
+  test('query functions reject a missing userId (scope cannot be dropped)', async () => {
+    await assert.rejects(() => transactionQueries.getTransactionById(ownTxId), /user-scoped/);
+    await assert.rejects(
+      () => transactionQueries.softDeleteTransactionById(ownTxId, undefined),
+      /user-scoped/,
+    );
+    await assert.rejects(
+      () => transactionQueries.restoreTransactionById(ownTxId, undefined),
+      /user-scoped/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sprint C undo pointer (users.last_deleted_transaction_id). Needs BOTH live
+// credentials AND supabase/migrations/20260930090000_add_last_deleted_transaction_id.sql
+// applied - tests skip (with a BLOCKED reason) instead of failing when the
+// column does not exist yet.
+// ---------------------------------------------------------------------------
+describe('Sprint C: undo pointer (migration-gated)', () => {
+  let pointerTxId = null;
+  let pointerForeignUserId = null;
+  let pointerForeignTxId = null;
+  let migrationChecked = false;
+  let migrationAppliedFlag = false;
+
+  async function migrationApplied() {
+    if (!migrationChecked) {
+      const supabase = (await import('../../src/db/supabaseClient.js')).getSupabaseClient();
+      const { error } = await supabase
+        .from('users')
+        .select('last_deleted_transaction_id')
+        .eq('id', testUserId)
+        .maybeSingle();
+      migrationAppliedFlag = !error;
+      migrationChecked = true;
+      if (error) {
+        console.log(
+          '  [BLOCKED] users.last_deleted_transaction_id missing - apply migration 20260930090000',
+        );
+      }
+    }
+    return migrationAppliedFlag;
+  }
+
+  after(async () => {
+    const supabase = (await import('../../src/db/supabaseClient.js')).getSupabaseClient();
+    if (pointerTxId) await supabase.from('transactions').delete().eq('id', pointerTxId);
+    if (pointerForeignTxId) {
+      await supabase.from('transactions').delete().eq('id', pointerForeignTxId);
+      await supabase.from('users').delete().eq('id', pointerForeignUserId);
+    }
+    if (await migrationApplied()) {
+      await supabase
+        .from('users')
+        .update({ last_deleted_transaction_id: null })
+        .eq('id', testUserId);
+    }
+  });
+
+  test('delete sets the pointer; restore consumes it; second undo is a no-op', async (t) => {
+    if (!(await migrationApplied())) {
+      return t.skip('BLOCKED: migration 20260930090000 not applied (column missing)');
+    }
+
+    const tx = await transactionQueries.insertTransaction({
+      user_id: testUserId,
+      type: 'expense',
+      amount: 99000,
+      category: 'Lainnya',
+      raw_text: 'TEST sprintC pointer target',
+      source_message_id: `TEST-SC-PTR-${Date.now()}`,
+    });
+    pointerTxId = tx.id;
+
+    const deleted = await transactionsDomain.deleteTransactionForUser({ id: testUserId }, tx.id);
+    assert.ok(deleted, 'delete must succeed');
+    assert.ok(deleted.transaction.deleted_at, 'row must be soft-deleted');
+    assert.equal(deleted.pointerSet, true, 'pointer must be set on success');
+
+    // undo reads the pointer from a FRESH user row, not from stale state
+    const freshUser = await userQueries.getUserByPhone(testPhoneNumber);
+    assert.equal(freshUser.last_deleted_transaction_id, tx.id);
+
+    const restored = await transactionsDomain.restoreLastDeletedTransaction(freshUser);
+    assert.equal(restored.outcome, 'restored');
+    assert.equal(restored.transaction.deleted_at, null);
+
+    const afterUser = await userQueries.getUserByPhone(testPhoneNumber);
+    assert.equal(afterUser.last_deleted_transaction_id, null, 'pointer cleared after undo');
+
+    const second = await transactionsDomain.restoreLastDeletedTransaction(afterUser);
+    assert.equal(second.outcome, 'none', 'second undo must be a safe no-op');
+  });
+
+  test("a pointer aimed at another user's row never restores it", async (t) => {
+    if (!(await migrationApplied())) {
+      return t.skip('BLOCKED: migration 20260930090000 not applied (column missing)');
+    }
+
+    const foreign = await userQueries.createUser(`TEST-PTR-F-${Date.now()}`);
+    pointerForeignUserId = foreign.id;
+    const foreignTx = await transactionQueries.insertTransaction({
+      user_id: foreign.id,
+      type: 'expense',
+      amount: 777,
+      category: 'Lainnya',
+      raw_text: 'TEST sprintC foreign pointer target',
+      source_message_id: `TEST-SC-PTRF-${Date.now()}`,
+    });
+    pointerForeignTxId = foreignTx.id;
+    await transactionQueries.softDeleteTransactionById(foreignTx.id, foreign.id);
+
+    // plant a bad pointer on the test user, then attempt the undo
+    await userQueries.updateUserById(testUserId, {
+      last_deleted_transaction_id: foreignTx.id,
+    });
+    const freshUser = await userQueries.getUserByPhone(testPhoneNumber);
+    const result = await transactionsDomain.restoreLastDeletedTransaction(freshUser);
+
+    assert.equal(result.outcome, 'missing', 'scoped lookup must fail for a foreign row');
+    const row = await transactionQueries.getTransactionById(foreignTx.id, foreign.id);
+    assert.ok(row.deleted_at, "foreign row must still be deleted");
+    const afterUser = await userQueries.getUserByPhone(testPhoneNumber);
+    assert.equal(afterUser.last_deleted_transaction_id, null, 'bad pointer cleared');
   });
 });
 

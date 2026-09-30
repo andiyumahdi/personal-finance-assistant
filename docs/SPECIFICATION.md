@@ -142,6 +142,7 @@ users
 ├── nickname           text NULL
 ├── link_token         text NULL           -- one-time OAuth linking token
 ├── link_token_expires timestamptz NULL
+├── last_deleted_transaction_id uuid FK -> transactions.id NULL -- undo pointer (Sprint C), ON DELETE SET NULL
 ├── created_at         timestamptz DEFAULT now()
 
 transactions
@@ -182,6 +183,7 @@ goals
 
 **Notes:**
 - No hard deletes anywhere in the transaction table — `deleted_at` only.
+- `users.last_deleted_transaction_id` is the ONLY target an "undo" ever restores (Sprint C): set on a successful delete, cleared on restore so the same transaction can never be undone twice. It is a single pointer, not a "recently deleted" list — there is no undo history beyond it.
 - `pending_context` is a single row per user (upsert pattern), not a growing log — it only ever tracks the *current* open context window.
 
 ---
@@ -548,6 +550,8 @@ States:
   AWAITING_CORRECTION_TARGET — bot asked "yang mana yang mau dikoreksi?"
   AWAITING_GOAL_TARGET    — mid-flow creating a goal (target amount step)
   AWAITING_GOAL_DEADLINE  — mid-flow creating a goal (deadline step)
+  AWAITING_DELETE_CONFIRMATION — delete flow: pick target, then explicit "ya"/"batal" confirmation (a delete never runs before the "ya")
+  AWAITING_EDIT_UPDATE    — edit flow: waiting for the one missing piece (which transaction, or what change)
   AWAITING_ONBOARDING_NAME — first contact, waiting for nickname
 
 Storage: single `state` + `state_context` (jsonb) column on `users`,

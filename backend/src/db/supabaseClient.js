@@ -28,3 +28,17 @@ export function getSupabaseClient() {
 
   return client;
 }
+
+// ---------------------------------------------------------------------------
+// Test-only seam. Unit tests substitute an in-memory fake here so the REAL
+// query-layer code (including its user_id scoping - see db/queries/*.js)
+// executes without live Supabase credentials. Never called from src/ -
+// only from test/ (see test/helpers/fakeSupabase.js). Reset in afterEach.
+// ---------------------------------------------------------------------------
+export function setSupabaseClientForTests(testClient) {
+  client = testClient;
+}
+
+export function resetSupabaseClientForTests() {
+  client = null;
+}

@@ -362,7 +362,7 @@ Chatbot (extraction + persona + hybrid intent router), Dashboard, Goals,
 Google OAuth (WhatsApp-first linking), Scheduler/recap automation. Only
 bug fixes from here on - no new capability added to this sprint's scope.
 
-### Sprint B — Conversation UX (current sprint)
+### Sprint B — Conversation UX ✅ DONE
 
 Goal: the chatbot can explain Nera's product well and holds a
 well-formatted conversation. Scope: Product Knowledge (closed-list FAQ
@@ -372,24 +372,42 @@ already agreed in this conversation (audit + reformat + closed-list
 product FAQ + tone review, tested against the example questions
 discussed: edit transaksi, dashboard, goals, recap, kenapa login Google).
 
-### Sprint C — Transaction Management
+### Sprint C — Transaction Management ✅ DONE
 
 Goal: transactions are actually manageable from WhatsApp, not just
 recordable. Scope: edit transaction via WhatsApp, delete transaction via
 WhatsApp, search transactions, better transaction history, undo last
 transaction.
 
-Architectural notes for when this sprint starts (not decided yet, flagged
-for the pre-coding discussion):
-- Edit/delete need new conversational flows with confirmation before
-  destructive action - likely new states in the existing state machine
-  (`STATES` in `messageHandler.js`), following the same
-  `AWAITING_*` pattern already established, not a parallel mechanism.
-- Likely reuses `pending_context` (already tracks "the last transaction")
-  as the anchor for "edit/delete/undo THAT one" - extending an existing
-  table over introducing a new one, per the reuse principle above.
-- Search is a new intent for the router (rule-based first, same pattern
-  as every other intent so far).
+Architectural decisions as implemented (originally flagged here for the
+pre-coding discussion):
+- Edit/delete run as new conversational flows in the existing state
+  machine (`STATES` in `messageHandler.js`), following the same
+  `AWAITING_*` pattern: `AWAITING_DELETE_CONFIRMATION` (target pick, then
+  an explicit "ya"/"batal" confirmation - a delete never happens on mere
+  mention) and `AWAITING_EDIT_UPDATE` (waiting for the one missing piece).
+  No parallel mechanism was introduced.
+- Reuses `pending_context` as the anchor for "edit THAT one" - extending
+  an existing table over introducing a new one, as anticipated. The one
+  genuinely new piece of state is `users.last_deleted_transaction_id`
+  (migration `20260930090000_add_last_deleted_transaction_id.sql`): undo
+  restores ONLY that pointer, never "the newest active transaction", so
+  the pointer must survive the `pending_context` TTL.
+- Search/edit/delete/undo are four new rule-based intents for the router,
+  checked ahead of the older keyword blocks with explicit exclusions
+  (goal messages, "cari tau" filler) so no intent swallows another; the
+  classifier enum, handler map, prompt and tests moved together.
+- All query-layer primitives used by these flows are user-scoped
+  (`transaction.user_id = userId` enforced in `db/queries/transactions.js`),
+  with ownership tests at both the unit level (in-memory fake) and the
+  integration level (real database).
+
+Open item: the pointer migration is **written but not yet applied** to the
+live database - applying it is a separate, explicitly-approved
+`supabase db push` step (SPECIFICATION.md section 12.4). Until then the
+delete flow still works and simply reports no undo hint
+(`pointerSet: false` degradation), and the pointer integration tests skip
+with a BLOCKED reason.
 
 ### Sprint D — Financial Organization
 

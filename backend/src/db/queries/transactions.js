@@ -1,6 +1,21 @@
 // Query layer: database operations only. No business logic here.
+//
+// SECURITY (Sprint C): every single-row read/update/delete on `transactions`
+// is scoped by user_id in the query itself - the service-role key bypasses
+// RLS (see supabase/migrations/20260714051107_add_rls_policies.sql), so
+// application-level scoping is the only ownership boundary. Knowing another
+// user's transaction id must never be enough to read, edit, delete, or
+// restore their row. Enforced by the .eq('user_id', userId) below and
+// proven by test/unit/transactionsQueries.test.js.
 
 import { getSupabaseClient } from '../supabaseClient.js';
+
+/** Ownership is not optional - fail loudly if a caller forgets to scope. */
+function assertUserScope(userId, fnName) {
+  if (!userId) {
+    throw new Error(`${fnName} requires a userId - transactions queries must stay user-scoped.`);
+  }
+}
 
 export async function insertTransaction(data) {
   const supabase = getSupabaseClient();
@@ -14,12 +29,20 @@ export async function insertTransaction(data) {
   return row;
 }
 
-export async function getTransactionById(id) {
+/**
+ * Fetches one transaction. User-scoped: returns null (not another user's
+ * row) when the id belongs to someone else. Includes soft-deleted rows -
+ * callers that only want active rows must check `deleted_at` themselves
+ * (the correction/continuation anchor does exactly that).
+ */
+export async function getTransactionById(id, userId) {
+  assertUserScope(userId, 'getTransactionById');
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
     .eq('id', id)
+    .eq('user_id', userId)
     .maybeSingle();
 
   if (error) throw error;
@@ -29,6 +52,7 @@ export async function getTransactionById(id) {
 /**
  * filters: { from, to, category, type, search, includeDeleted }
  * Excludes soft-deleted rows unless filters.includeDeleted is true.
+ * Always scoped to userId (read-only SELECT).
  */
 export async function listTransactions(userId, filters = {}) {
   const supabase = getSupabaseClient();
@@ -50,27 +74,56 @@ export async function listTransactions(userId, filters = {}) {
   return data;
 }
 
-export async function updateTransactionById(id, changes) {
+/** User-scoped. Returns the updated row, or null when not found/not owner. */
+export async function updateTransactionById(id, userId, changes) {
+  assertUserScope(userId, 'updateTransactionById');
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('transactions')
     .update(changes)
     .eq('id', id)
+    .eq('user_id', userId)
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) throw error;
   return data;
 }
 
-export async function softDeleteTransactionById(id) {
+/** User-scoped. Returns the updated row, or null when not found/not owner. */
+export async function softDeleteTransactionById(id, userId) {
+  assertUserScope(userId, 'softDeleteTransactionById');
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('transactions')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('user_id', userId)
     .select()
-    .single();
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Sprint C undo primitive. User-scoped, and only touches rows that are
+ * actually soft-deleted: `deleted_at = null` means "active", so restoring
+ * an already-active row is a no-op (returns null) rather than a silent
+ * second undo. Returns the restored row, or null when not found/not owner
+ * /not deleted.
+ */
+export async function restoreTransactionById(id, userId) {
+  assertUserScope(userId, 'restoreTransactionById');
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('transactions')
+    .update({ deleted_at: null })
+    .eq('id', id)
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .select()
+    .maybeSingle();
 
   if (error) throw error;
   return data;

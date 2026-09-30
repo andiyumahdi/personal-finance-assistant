@@ -53,6 +53,16 @@ export async function setPendingContext(userId, transactionId) {
   return pendingContextQueries.upsertPendingContext(userId, transactionId, expiresAt);
 }
 
+/**
+ * Removes the user's pending-context row entirely. Sprint C: called after a
+ * delete, because a continuation/correction window must never point at a
+ * soft-deleted transaction (the correction path would otherwise update a
+ * deleted row).
+ */
+export async function clearPendingContext(userId) {
+  return pendingContextQueries.deletePendingContext(userId);
+}
+
 // ---------------------------------------------------------------------------
 // Per-user lock. Purely in-memory, no I/O - this is what makes it safely
 // unit-testable without a database. Must stay per-user only, never a

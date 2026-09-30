@@ -1,4 +1,4 @@
-# Nera — Product Knowledge Base & FAQ (Sprint B, LOCKED)
+# Nera — Product Knowledge Base & FAQ (Sprint C revision, LOCKED)
 
 **Status: LOCKED as of this revision.** This is the single source of truth
 `product_question` responses will be grounded in — nothing outside this
@@ -21,6 +21,8 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - **Catat transaksi:** langsung chat aja, contoh "jajan 20rb" atau "gaji bulan ini 5jt". Nggak perlu format khusus.
 - **Minta rekap:** ketik "rekap" atau "habis berapa minggu ini". Rekap juga otomatis dikirim tiap Senin (mingguan) dan tanggal 1 (bulanan) kalau ada transaksi di periode itu.
 - **Bikin goal:** ketik sesuatu kayak "mau nabung buat laptop", nanti Nera nanya target nominal dan tanggalnya.
+- **Ubah/hapus transaksi:** tinggal bilang, misal "yang 20rb tadi jadi 25rb" (ubah) atau "hapus yang 20rb" — Nera minta konfirmasi dulu sebelum beneran dihapus. Salah hapus? Ketik "undo" buat balikin transaksi terakhir.
+- **Cari riwayat transaksi:** ketik "cari transaksi makan" atau "cari pengeluaran 20rb", hasilnya maksimal 5 transaksi.
 - **Buka dashboard:** ketik "dashboard" atau "login" ke chat ini, nanti dikirimin link buat connect.
 - **Login (pertama kali):** klik link yang dikirim bot, lanjut login pakai akun Google. Setelah itu, login berikutnya tinggal pakai Google seperti biasa.
 
@@ -33,15 +35,13 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - Koreksi transaksi terakhir kalau salah ketik ("eh salah, yang tadi 15rb"), selama masih dalam window waktu singkat setelah transaksi itu
 - Kalau arah uang (masuk/keluar) ambigu, Nera nanya balik dulu
 - Kalau nominal nggak disebutkan (misal "bayar netflix" tanpa angka), Nera nanya nominalnya
+- Edit transaksi lewat chat, misal "yang 20rb tadi jadi 25rb" atau "ubah kategorinya jadi makanan" — Nera nanya dulu kalau transaksinya yang dimaksud nggak jelas
+- Hapus transaksi lewat chat, misal "hapus yang 20rb" — selalu minta konfirmasi "ya"/"batal" dulu, nggak pernah langsung hapus
+- Cari riwayat transaksi lewat chat, misal "cari transaksi makan" atau "cari pengeluaran 20rb" — hasil maksimal 5 transaksi
+- Undo transaksi terakhir yang dihapus ("undo" atau "balikin transaksi tadi") — cuma transaksi yang barusan dihapus aja yang bisa dibalikin
 
 **Belum tersedia saat ini:**
 - Satu pesan berisi lebih dari satu transaksi sekaligus (misal "beli baju sama sepatu 200rb" belum otomatis kepisah)
-
-**Direncanakan di roadmap (Sprint C — Transaction Management):**
-- Edit transaksi lewat chat
-- Hapus transaksi lewat chat
-- Cari/lihat riwayat transaksi lewat chat
-- Undo transaksi terakhir
 
 ## 4. Kategori
 
@@ -125,13 +125,15 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 - **Data aku aman nggak?** Aman — data kamu cuma bisa diakses lewat akun kamu sendiri, nggak bisa dilihat orang lain.
 - **Data aku disimpan di mana?** Disimpan online, jadi tetap ada dan bisa diakses walaupun kamu ganti perangkat — asal lewat akun yang sudah tersambung.
 - **Kalau internet mati apakah masih bisa dipakai?** Nera jalan lewat WhatsApp dan dashboard online, jadi tetap butuh koneksi internet.
-- **Kalau aku salah catat gimana?** Kalau baru aja, bisa dikoreksi langsung di chat ("eh salah, yang tadi 15rb"). Kalau transaksinya udah lama, untuk sekarang belum bisa diedit — ini lagi direncanakan (lihat bagian 3).
+- **Kalau aku salah catat gimana?** Kalau baru aja, bisa dikoreksi langsung di chat ("eh salah, yang tadi 15rb"). Kalau transaksinya udah lama juga bisa — bilang "yang 20rb tadi jadi 25rb" buat ngedit, atau "hapus yang 20rb" buat hapus (Nera minta konfirmasi dulu). Salah hapus? Ketik "undo" selama belum ada transaksi lain yang dihapus sesudahnya (lihat bagian 3).
 - **Kalau aku ganti HP gimana?** Nggak masalah, karena datanya nggak nyimpen di HP — tinggal lanjut chat dari nomor WhatsApp yang sama seperti biasa.
 - **Kalau aku ganti akun Google gimana?** Untuk sekarang belum ada mekanisme buat ganti/sambungin ulang ke akun Google lain — nomor WhatsApp kamu tetap tersambung ke akun Google yang pertama kali dipakai.
 
 ---
 
-**Status: LOCKED.** Approved as the source of truth for Sprint B's
-`product_question` prompt content. Any future product change (new
+**Status: LOCKED.** Approved as the source of truth for the
+`product_question` prompt content — Sprint B baseline, revised after
+Sprint C shipped (edit / hapus / cari / undo transaksi lewat chat, all
+cross-checked against implemented code). Any future product change (new
 feature, changed behavior) should update this file first, then the
 prompt that's grounded in it — not the other way around.

@@ -12,7 +12,7 @@
 // (forbidden phrases, no inventing features) - both apply to this
 // prompt's output.
 
-export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-07-27';
+export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-09-30';
 
 const KNOWLEDGE_BASE = `
 PRINSIP NERA:
@@ -25,12 +25,13 @@ CARA PAKAI:
 - Catat transaksi: chat natural, misal "jajan 20rb" atau "gaji 5jt".
 - Minta rekap: ketik "rekap" kapan aja. Rekap otomatis juga dikirim tiap Senin (mingguan) dan tanggal 1 (bulanan) kalau ada transaksi.
 - Bikin goal: ketik "mau nabung buat ...", nanti ditanya target dan tanggal.
+- Ubah/hapus transaksi: tinggal bilang, misal "yang 20rb tadi jadi 25rb" atau "hapus yang 20rb" (selalu minta konfirmasi "ya"/"batal" dulu). Salah hapus? ketik "undo".
+- Cari riwayat transaksi: "cari transaksi makan" atau "cari pengeluaran 20rb", hasil maksimal 5 transaksi.
 - Buka dashboard: ketik "dashboard" atau "login", nanti dikirim link.
 - Login pertama kali: klik link dari bot, login pakai Google. Setelahnya tinggal pakai Google biasa.
 
-TRANSAKSI - BISA: catat natural tanpa format khusus; deteksi otomatis expense/income/kategori/nominal; transaksi beruntun otomatis kepisah; koreksi transaksi terakhir dalam window singkat ("eh salah, tadi 15rb"); kalau arah uang ambigu ditanya dulu; kalau nominal nggak disebut ditanya nominalnya.
+TRANSAKSI - BISA: catat natural tanpa format khusus; deteksi otomatis expense/income/kategori/nominal; transaksi beruntun otomatis kepisah; koreksi transaksi terakhir dalam window singkat ("eh salah, tadi 15rb"); kalau arah uang ambigu ditanya dulu; kalau nominal nggak disebut ditanya nominalnya; EDIT transaksi lewat chat ("yang 20rb tadi jadi 25rb", "ubah kategorinya jadi makanan"); HAPUS transaksi lewat chat dengan konfirmasi "ya"/"batal" dulu ("hapus yang 20rb"); CARI riwayat transaksi lewat chat ("cari transaksi makan"), hasil maksimal 5; UNDO transaksi terakhir yang dihapus ("undo"), cuma transaksi yang barusan dihapus yang bisa dibalikin.
 TRANSAKSI - BELUM TERSEDIA: satu pesan berisi lebih dari satu transaksi sekaligus.
-TRANSAKSI - DIRENCANAKAN (Sprint C): edit transaksi lewat chat, hapus transaksi lewat chat, cari/lihat riwayat lewat chat, undo transaksi terakhir.
 
 KATEGORI - BISA: Nera otomatis pilih dari daftar kategori bawaan (contoh: Makanan & Minuman, Transport, Belanja, Tagihan, Hiburan, dll).
 KATEGORI - DIRENCANAKAN (Sprint D): bikin kategori sendiri, edit/kelola kategori.
@@ -60,7 +61,7 @@ FAQ OPERASIONAL:
 - Data aman? Aman, cuma bisa diakses lewat akun sendiri.
 - Data disimpan di mana? Online, tetap ada walau ganti perangkat, asal lewat akun yang tersambung.
 - Internet mati, bisa dipakai? Tidak, Nera butuh koneksi internet (jalan lewat WhatsApp dan dashboard online).
-- Salah catat gimana? Kalau baru aja, koreksi langsung di chat. Kalau udah lama, belum bisa diedit (sedang direncanakan).
+- Salah catat gimana? Kalau baru aja, koreksi langsung di chat. Kalau udah lama, tetap bisa: bilang "yang 20rb tadi jadi 25rb" (edit) atau "hapus yang 20rb" (dikonfirmasi dulu). Salah hapus? ketik "undo".
 - Ganti HP gimana? Tidak masalah, data tidak disimpan di HP, tinggal lanjut chat dari nomor WA yang sama.
 - Ganti akun Google gimana? Belum ada mekanisme untuk itu saat ini.
 `.trim();
