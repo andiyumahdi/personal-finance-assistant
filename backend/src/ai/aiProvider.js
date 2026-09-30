@@ -6,8 +6,9 @@ import { callGemini } from './geminiClient.js';
 import {
   EXTRACTION_PROMPT_VERSION,
   EXTRACTION_SYSTEM_INSTRUCTION,
-  EXTRACTION_RESPONSE_SCHEMA,
   buildExtractionPrompt,
+  buildExtractionResponseSchema,
+  resolveAllowedCategories,
 } from './extractionPrompt.js';
 import {
   PERSONA_PROMPT_VERSION,
@@ -36,15 +37,21 @@ const MAX_EXTRACTION_ATTEMPTS = 2;
  * Pure validation - no I/O. Exported separately so it's directly
  * unit-testable against hand-written fixture objects, without calling
  * Gemini at all. Returns { valid: true } or { valid: false, reason }.
+ *
+ * `allowed` is the category enum the result must be a member of - the ten
+ * defaults by default (pre-D1 behavior), or the caller's resolved active
+ * list (defaults + custom) as passed by extract(). It is checked
+ * literally; composing defaults with customs is extract()'s job via
+ * resolveAllowedCategories().
  */
-export function validateExtractionResult(result) {
+export function validateExtractionResult(result, allowed = CATEGORIES) {
   if (typeof result !== 'object' || result === null || Array.isArray(result)) {
     return { valid: false, reason: 'Result is not a plain object' };
   }
   if (!VALID_TYPES.includes(result.type)) {
     return { valid: false, reason: `Invalid type: ${result.type}` };
   }
-  if (!CATEGORIES.includes(result.category)) {
+  if (!allowed.includes(result.category)) {
     return { valid: false, reason: `Invalid category: ${result.category}` };
   }
   if (!VALID_CONFIDENCE.includes(result.confidence)) {
@@ -72,10 +79,17 @@ export function validateExtractionResult(result) {
 export const aiProvider = {
   /**
    * context: { lastTransaction } | null (see domain/context.js)
+   * categories: the user's ACTIVE categories to allow in the schema enum.
+   * The ten defaults are always merged in by resolveAllowedCategories(),
+   * so callers may pass only their custom names - or nothing at all,
+   * which preserves the exact pre-D1 defaults-only behavior (every legacy
+   * call site in Sprint A-C code keeps working unchanged).
    * Returns the validated extraction result plus the prompt version used,
    * for traceability (SPECIFICATION.md section 12.3 / transactions.prompt_version).
    */
-  async extract(rawText, context = null) {
+  async extract(rawText, context = null, categories = []) {
+    const allowedCategories = resolveAllowedCategories(categories);
+    const responseSchema = buildExtractionResponseSchema(allowedCategories);
     const prompt = buildExtractionPrompt(rawText, context);
     const model = process.env.GEMINI_MODEL_EXTRACTION || 'gemini-3.1-flash-lite';
 
@@ -85,7 +99,7 @@ export const aiProvider = {
       const raw = await callGemini(prompt, {
         model,
         systemInstruction: EXTRACTION_SYSTEM_INSTRUCTION,
-        responseSchema: EXTRACTION_RESPONSE_SCHEMA,
+        responseSchema,
       });
 
       let parsed;
@@ -96,7 +110,7 @@ export const aiProvider = {
         continue;
       }
 
-      const validation = validateExtractionResult(parsed);
+      const validation = validateExtractionResult(parsed, allowedCategories);
       if (validation.valid) {
         return { ...parsed, prompt_version: EXTRACTION_PROMPT_VERSION };
       }

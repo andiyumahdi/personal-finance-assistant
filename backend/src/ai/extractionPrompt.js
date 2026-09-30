@@ -1,11 +1,14 @@
 // Extraction layer: turns free-form Indonesian text into structured
-// transaction data. Output is constrained by EXTRACTION_RESPONSE_SCHEMA via
+// transaction data. Output is constrained by the response schema via
 // Gemini's structured output mode - never parsed from free-text JSON.
+// Since Sprint D (D1) the schema's category enum is built per call from
+// the user's active categories (ten defaults + their custom rows), see
+// buildExtractionResponseSchema below.
 // See SPECIFICATION.md section 7.1 and section 12.3 (Prompt Versioning).
 
 import { CATEGORIES } from '../config/categories.js';
 
-export const EXTRACTION_PROMPT_VERSION = 'v2026-07-10.1';
+export const EXTRACTION_PROMPT_VERSION = 'v2026-09-30.1';
 
 export const EXTRACTION_SYSTEM_INSTRUCTION = `You extract financial transaction data from casual, informal Indonesian text (WhatsApp messages). You do not talk to the user - you only produce structured data matching the response schema.
 
@@ -24,19 +27,52 @@ Rules:
 - You never calculate totals, percentages, or anything beyond what is explicitly extractable from this single message.
 - "description" is a short plain-language summary of what the transaction was for, in Indonesian.`;
 
-export const EXTRACTION_RESPONSE_SCHEMA = {
-  type: 'object',
-  properties: {
-    type: { type: 'string', enum: ['income', 'expense', 'unknown'] },
-    amount: { type: 'number' },
-    category: { type: 'string', enum: CATEGORIES },
-    description: { type: 'string' },
-    is_continuation: { type: 'boolean' },
-    is_correction: { type: 'boolean' },
-    confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
-  },
-  required: ['type', 'category', 'description', 'is_continuation', 'is_correction', 'confidence'],
-};
+/**
+ * Resolves the final allowed-category enum for extraction. The ten
+ * built-in defaults are ALWAYS present (a caller can pass only its
+ * custom names - or nothing at all and get exactly the pre-D1
+ * defaults-only behavior), non-string/empty entries are dropped, and
+ * duplicates collapse. Order is stable: defaults first, customs after.
+ *
+ * `categories` is the user's active custom categories (Batch 3 wires this
+ * from domain listCategories -> aiProvider.extract); collisions with
+ * defaults cannot occur because domain/categories.js rejects creating or
+ * renaming a custom to a default's name (any case).
+ */
+export function resolveAllowedCategories(categories = []) {
+  const extra = Array.isArray(categories)
+    ? categories.filter((name) => typeof name === 'string' && name.length > 0)
+    : [];
+  return [...new Set([...CATEGORIES, ...extra])];
+}
+
+/**
+ * The extraction response schema with a category enum built from the
+ * caller's active list - this is what lets a per-user custom category
+ * survive Gemini structured-output validation instead of being rejected
+ * by the old closed enum. Everything else (types, required fields, other
+ * enums) is identical to the Sprint A-C schema by design.
+ */
+export function buildExtractionResponseSchema(categories = []) {
+  return {
+    type: 'object',
+    properties: {
+      type: { type: 'string', enum: ['income', 'expense', 'unknown'] },
+      amount: { type: 'number' },
+      category: { type: 'string', enum: resolveAllowedCategories(categories) },
+      description: { type: 'string' },
+      is_continuation: { type: 'boolean' },
+      is_correction: { type: 'boolean' },
+      confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+    },
+    required: ['type', 'category', 'description', 'is_continuation', 'is_correction', 'confidence'],
+  };
+}
+
+// Static defaults-only schema, kept exported for backward compatibility
+// (docs reference it by name); aiProvider builds a per-call schema from
+// the active categories instead of using this constant.
+export const EXTRACTION_RESPONSE_SCHEMA = buildExtractionResponseSchema();
 
 /**
  * context: { lastTransaction } | null - when the user's last message is

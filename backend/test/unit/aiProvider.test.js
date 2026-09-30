@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateExtractionResult } from '../../src/ai/aiProvider.js';
+import { CATEGORIES } from '../../src/config/categories.js';
 
 const validBase = {
   type: 'expense',
@@ -71,5 +72,25 @@ describe('validateExtractionResult (pure, no Gemini call)', () => {
 
   test('rejects a completely empty object', () => {
     assert.equal(validateExtractionResult({}).valid, false);
+  });
+});
+
+describe('validateExtractionResult with an explicit allowed list (D1)', () => {
+  test('accepts a custom category when the allowed list includes it', () => {
+    const result = validateExtractionResult(
+      { ...validBase, category: 'Kopi Langganan' },
+      [...CATEGORIES, 'Kopi Langganan'],
+    );
+    assert.deepEqual(result, { valid: true });
+  });
+
+  test('still rejects a custom category under the default allowed list', () => {
+    const result = validateExtractionResult({ ...validBase, category: 'Kopi Langganan' });
+    assert.equal(result.valid, false);
+  });
+
+  test('takes the allowed list literally (defaults absent from it are rejected)', () => {
+    const result = validateExtractionResult(validBase, ['Kopi Langganan']);
+    assert.equal(result.valid, false);
   });
 });
