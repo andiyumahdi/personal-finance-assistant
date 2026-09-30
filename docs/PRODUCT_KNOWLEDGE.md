@@ -39,6 +39,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - Hapus transaksi lewat chat, misal "hapus yang 20rb" — selalu minta konfirmasi "ya"/"batal" dulu, nggak pernah langsung hapus
 - Cari riwayat transaksi lewat chat, misal "cari transaksi makan" atau "cari pengeluaran 20rb" — hasil maksimal 5 transaksi
 - Undo transaksi terakhir yang dihapus ("undo" atau "balikin transaksi tadi") — cuma transaksi yang barusan dihapus aja yang bisa dibalikin
+- Kelola kategori lewat chat ("buat kategori …", "ganti nama kategori … jadi …", "hapus kategori …") — detail lengkap di bagian **4. Kategori**
 
 **Belum tersedia saat ini:**
 - Satu pesan berisi lebih dari satu transaksi sekaligus (misal "beli baju sama sepatu 200rb" belum otomatis kepisah)
@@ -46,11 +47,20 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 ## 4. Kategori
 
 **Bisa:**
-- Nera otomatis memilih kategori dari daftar kategori bawaan yang tersedia (contoh: Makanan & Minuman, Transport, Belanja, Tagihan, Hiburan, dll)
+- Nera otomatis memilih kategori dari daftar aktif kamu: 10 kategori bawaan (Makanan & Minuman, Transport, Belanja, Tagihan, Hiburan, dll) plus kategori buatanmu sendiri
+- Bikin kategori sendiri lewat chat, misal "buat kategori Kopi Langganan"
+- Ganti nama kategori lewat chat ("ganti nama kategori Kopi jadi Kopi Pagi") atau di dashboard **Settings → Categories** — transaksi aktif kamu ikut keganti otomatis
+- Hapus kategori sendiri lewat chat ("hapus kategori Kopi") atau di Settings → Categories
+- Pantau daftar kategori + jumlah transaksi aktif per kategori di Settings → Categories; filter kategori di halaman Transaksi ikut daftar terbaru
 
-**Direncanakan di roadmap (Sprint D — Financial Organization):**
-- Bikin kategori sendiri
-- Edit/kelola kategori
+**Aturan:**
+- Kategori bawaan nggak bisa diganti namanya atau dihapus (di Settings tampil terkunci)
+- Kategori yang masih dipakai transaksi aktif nggak bisa dihapus — Nera kasih tahu jumlahnya; transaksi yang sudah dihapus (soft-delete) tetap menyimpan label lamanya
+- Maksimal 50 kategori sendiri per user; nama harus unik per user (gak bisa duplikat, termasuk nama bawaan)
+- Chat dan Settings selalu pakai daftar kategori yang sama
+
+**Belum tersedia saat ini:**
+- Tombol "Add Category" di Settings — bikin kategori baru masih lewat chat dulu
 
 ## 5. Rekap
 

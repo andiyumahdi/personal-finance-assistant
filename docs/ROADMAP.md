@@ -402,12 +402,12 @@ pre-coding discussion):
   with ownership tests at both the unit level (in-memory fake) and the
   integration level (real database).
 
-Open item: the pointer migration is **written but not yet applied** to the
-live database - applying it is a separate, explicitly-approved
-`supabase db push` step (SPECIFICATION.md section 12.4). Until then the
-delete flow still works and simply reports no undo hint
-(`pointerSet: false` degradation), and the pointer integration tests skip
-with a BLOCKED reason.
+Open item resolved: the pointer migration
+`20260930090000_add_last_deleted_transaction_id.sql` **has been applied
+to the live database** (pushed as part of Sprint C's completion,
+SPECIFICATION.md section 12.4). The delete flow reports its undo hint
+normally and the pointer integration tests run (no more BLOCKED skip) —
+integration suite is 23/23 against the real database.
 
 ### Sprint D — Financial Organization
 
@@ -437,6 +437,46 @@ request to sequence this sprint for architectural health):
    `type: 'transfer'` value. This is exactly the kind of "large trade-off
    affecting system design" the working principles above call out for a
    pre-coding discussion.
+
+**D1 Category Management ✅ DONE** (item 1 above; delivered in five
+reviewed batches). Decisions as implemented:
+- **Two channels, one feature:** dashboard (`GET/POST/PATCH/DELETE
+  /api/categories`, SPECIFICATION.md section 4.5 + a `Categories` group in
+  Settings) and WhatsApp chat (new `category_manage` intent, classifier
+  enum 14, checked FIRST in the router so "hapus kategori X" /
+  "ganti nama kategori X jadi Y" aren't swallowed by the transaction
+  delete/edit rules; a bare "ganti kategori jadi X" still edits a
+  transaction, per the pre-D1 routing tests).
+- **Schema:** new `user_categories` table (per-user rows; unique on
+  `(user_id, lower(name))`; RLS enabled, zero policies) + migration
+  `20260930173900_add_user_categories.sql`, which also drops the
+  `transactions.category` CHECK (application-enforced invariant instead:
+  active transaction's category ∈ active list).
+- **Delete semantics (locked decision):** defaults non-deletable;
+  in use by ACTIVE transactions → rejected immediately with the count (no
+  confirmation); only-soft-deleted usage → confirmation (`"ya"` in chat,
+  AlertDialog in Settings) with a commit-time re-count that cancels the
+  delete if a transaction landed meanwhile; a delete NEVER writes to
+  transactions, so soft-deleted history keeps its labels.
+- **Rename** cascades only to that user's ACTIVE transactions; **create**
+  validates (2–40 chars, char class, case-insensitive per-user unique
+  incl. defaults, cap 50) in the chat domain (`domain/categories.js`) and
+  the API (mirrored rules in `frontend/lib/categories.ts`).
+- **Extraction** now receives the user's active list
+  (`extract(rawText, context, categories)`),
+  `EXTRACTION_PROMPT_VERSION = v2026-09-30.1`; the intent classifier
+  prompt bumped to `v2026-09-30.2` for the new enum. Golden set re-run
+  15/15 per SPECIFICATION.md section 12.3.
+- **Verification:** backend unit 279, integration 23/23 (real DB), lint
+  clean (backend + frontend), `next build` OK.
+
+Open item: migration `20260930173900_add_user_categories.sql` is
+**committed locally but not yet applied** to the live database — applying
+it is a separate, explicitly-approved `supabase db push` step
+(SPECIFICATION.md section 12.4). Until then every D1 category feature
+(chat commands, `/api/categories`) fails closed against the live
+database; the rest of the app is unaffected (the transactions page falls
+back to the built-in category list, and Settings shows a retryable error).
 
 ### Sprint E — Intelligence
 

@@ -150,7 +150,7 @@ transactions
 ├── user_id            uuid FK -> users.id
 ├── type               text CHECK (type IN ('income','expense'))
 ├── amount             numeric NOT NULL
-├── category           text NOT NULL        -- closed enum, see 7.2
+├── category           text NOT NULL        -- name from the active list, see 7.2 (defaults + per-user custom; DB CHECK dropped in Sprint D1, application-enforced)
 ├── raw_text           text NOT NULL        -- original user message, for audit/debug
 ├── confidence         text CHECK (confidence IN ('high','medium','low'))
 ├── source_message_id  text NOT NULL        -- WhatsApp message id, for dedupe
@@ -177,14 +177,21 @@ goals
 ├── current_saved      numeric DEFAULT 0
 ├── status             text CHECK (status IN ('active','achieved','abandoned')) DEFAULT 'active'
 ├── created_at         timestamptz DEFAULT now()
+
+user_categories
+├── id                 uuid PK
+├── user_id            uuid FK -> users.id
+├── name               text NOT NULL    -- 2-40 chars after normalization, see 7.2
+├── created_at         timestamptz DEFAULT now()
 ```
 
-**Indices:** `transactions(user_id, created_at)`, `transactions(user_id, deleted_at)`, `message_log(wa_message_id)`.
+**Indices:** `transactions(user_id, created_at)`, `transactions(user_id, deleted_at)`, `message_log(wa_message_id)`, `UNIQUE user_categories(user_id, lower(name))` (Sprint D1 - per-user, case-insensitive name uniqueness).
 
 **Notes:**
 - No hard deletes anywhere in the transaction table — `deleted_at` only.
 - `users.last_deleted_transaction_id` is the ONLY target an "undo" ever restores (Sprint C): set on a successful delete, cleared on restore so the same transaction can never be undone twice. It is a single pointer, not a "recently deleted" list — there is no undo history beyond it.
 - `pending_context` is a single row per user (upsert pattern), not a growing log — it only ever tracks the *current* open context window.
+- Category Management (Sprint D1, migration `20260930173900_add_user_categories.sql`): the ten defaults live in code, not as rows — only custom categories are rows, strictly per-user. `transactions.category` holds the NAME (no FK), so: deleting a category NEVER touches transactions (soft-deleted history keeps its old label), and renaming cascades only to that user's ACTIVE transactions (`deleted_at IS NULL`). RLS on `user_categories` is enabled with zero policies (same reason as every other table: service-role-only access, see `supabase/README.md`).
 
 ---
 
@@ -217,7 +224,17 @@ Two consumers: the Baileys backend (writes) and the Next.js dashboard (reads/edi
 | PATCH | `/api/goals/:id` | Update progress/status |
 | DELETE | `/api/goals/:id` | Remove goal |
 
-### 4.5 Internal (backend-only, not exposed to dashboard)
+### 4.5 Categories (Sprint D1)
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/categories` | Active category list: the ten built-in defaults first (locked, `id: null`), then the user's custom rows. Every entry carries `active_transaction_count` — computed as an aggregate over ACTIVE transactions only (`deleted_at IS NULL`), one grouped query total, deliberately not one count query per category (N+1) |
+| POST | `/api/categories` | Create a custom category (`{name}`). Errors: `400 invalid_name` (+ `reason`), `409 duplicate`, `409 duplicate_default`, `409 too_many` (cap 50) |
+| PATCH | `/api/categories/:id` | Rename a custom category (`{name}`) → `{category, transactions_updated}`. Cascade covers ONLY this user's active transactions (`deleted_at IS NULL`); soft-deleted history keeps its label. Same validation/duplicate errors as POST; defaults → `403 default` |
+| DELETE | `/api/categories/:id` | D1 locked semantics: default → `403 default`; still used by active transactions → `409 {error:'in_use', activeCount}`; unknown → `404`; unused → `200 {success:true}`. The delete NEVER writes to transactions |
+
+Defaults are addressed by NAME in `:id` (they have no row — e.g. `DELETE /api/categories/Transport`); custom categories by uuid. Every query carries `user_id = session.user.id` (NextAuth session) in the WHERE clause itself, same ownership pattern as section 4.4. Validation mirrors `backend/src/domain/categories.js` via the copy in `frontend/lib/categories.ts` (separate deployable services — same pattern as the goals contribute logic).
+
+### 4.6 Internal (backend-only, not exposed to dashboard)
 These live inside the Baileys backend process, not as public HTTP routes:
 - `extractTransaction(rawText, context)` → calls Gemini extraction layer, returns structured JSON
 - `generateReply(templateData, personaContext)` → calls Gemini persona layer, returns natural-language string
@@ -243,6 +260,7 @@ backend/
 │   │   ├── transactions.js        # create/edit/soft-delete logic
 │   │   ├── context.js             # pending_context read/write, window logic
 │   │   ├── goals.js
+│   │   ├── categories.js          # custom category create/rename/delete rules (Sprint D1)
 │   │   └── summary.js             # totals/percentage calculations (pure math, no AI)
 │   ├── scheduler/
 │   │   ├── dailyReminder.js
@@ -252,7 +270,7 @@ backend/
 │   │   ├── supabaseClient.js
 │   │   └── queries/               # one file per table
 │   ├── config/
-│   │   └── categories.js          # closed category enum
+│   │   └── categories.js          # default category enum + isDefaultCategory (custom rows: user_categories, Sprint D1)
 │   └── index.js                   # entry point, wires everything + starts cron
 ├── auth_state/                    # Baileys session persistence (persisted volume!)
 ├── package.json
@@ -274,6 +292,8 @@ frontend/
 │   │   └── summary/page.tsx        # charts
 │   ├── api/
 │   │   ├── auth/[...nextauth]/route.ts
+│   │   ├── categories/route.ts
+│   │   ├── categories/[id]/route.ts
 │   │   ├── transactions/route.ts
 │   │   ├── transactions/[id]/route.ts
 │   │   ├── summary/route.ts
@@ -287,6 +307,7 @@ frontend/
 │   └── SummaryCards.tsx
 ├── lib/
 │   ├── supabaseClient.ts
+│   ├── categories.ts               # mirrors defaults + category name rules (Sprint D1)
 │   └── auth.ts
 ├── package.json
 └── .env.local
@@ -307,10 +328,12 @@ System instruction:
 - Output ONLY valid JSON matching the schema below. No prose, no explanation.
 - If the direction of money (income vs expense) is unclear, set confidence "low"
   and type "unknown" — do not guess.
-- Category MUST be one of the closed enum values provided. Use "Lainnya" if unsure.
+- Category MUST be one of the allowed values provided (the ten defaults plus
+  the user's own custom categories — Sprint D1). Use "Lainnya" if unsure.
 - You do not calculate anything. You only extract what is stated.
 
 Input: {conversation context if any (last transaction, if within window)}
+       {allowed category list (defaults + the user's custom categories)}
        {user's raw message}
 
 Output schema:
@@ -326,8 +349,19 @@ Output schema:
 ```
 Implementation requirement: use Gemini's structured/function-calling output mode, not free-text JSON-in-prompt — always validate against the schema before writing to DB, with a retry-once policy on validation failure.
 
-### 7.2 Closed Category Enum
+### 7.2 Category List (defaults + per-user custom — Sprint D1)
+
+Built-in defaults (closed set, locked — present for every user, not rows in `user_categories`):
 `Makanan & Minuman`, `Transport`, `Belanja`, `Tagihan`, `Hiburan`, `Kesehatan`, `Pendidikan`, `Gaji`, `Transfer`, `Lainnya`
+
+On top of those, each user may add custom categories (migration `20260930173900_add_user_categories.sql`):
+- **Name rules:** 2–40 characters after whitespace normalization; first char letter/number, then letters/numbers/spaces plus `& ' ( ) . -`; no emoji, slash, or comma (`backend/src/domain/categories.js`, mirrored for the dashboard API in `frontend/lib/categories.ts`).
+- **Uniqueness & cap:** unique per user, case-insensitive (`UNIQUE (user_id, lower(name))`); a custom name may not collide with a default; max 50 custom categories per user.
+- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (enum 14) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
+- **Delete semantics (locked):** defaults are never deletable (API `403 default`); a category still referenced by ACTIVE transactions is rejected with the count (chat reply / API `409 in_use` + `activeCount`), no confirmation opens; otherwise confirmation in chat ("ya" re-counts at commit time) or Settings dialog. A delete NEVER writes to transactions — soft-deleted history keeps its historical label.
+- **Rename cascade:** only that user's ACTIVE transactions (`deleted_at IS NULL`); other users never touched; defaults not renameable.
+- **Invariant:** every ACTIVE transaction's category is in the user's active list — application-enforced (the DB CHECK on `transactions.category` was dropped in migration `20260930173900` because custom names can't be pre-enumerated).
+- `Lainnya` remains the extraction fallback guess (section 7.1), never a reassignment target.
 
 ### 7.3 Persona Layer (higher temperature, natural language only)
 **Responsibility:** phrase a reply using numbers the backend already computed. Never computes anything itself.
@@ -544,15 +578,22 @@ These 5 decisions close out the specification. No further revisions to this docu
 Replace ad-hoc if-else branching in `messageHandler.js` with an explicit per-user state field.
 
 ```
-States:
+States (as implemented):
   IDLE                    — default, no open question
   AWAITING_DIRECTION      — bot asked "masuk atau keluar?", waiting for reply
-  AWAITING_CORRECTION_TARGET — bot asked "yang mana yang mau dikoreksi?"
   AWAITING_GOAL_TARGET    — mid-flow creating a goal (target amount step)
   AWAITING_GOAL_DEADLINE  — mid-flow creating a goal (deadline step)
   AWAITING_DELETE_CONFIRMATION — delete flow: pick target, then explicit "ya"/"batal" confirmation (a delete never runs before the "ya")
   AWAITING_EDIT_UPDATE    — edit flow: waiting for the one missing piece (which transaction, or what change)
-  AWAITING_ONBOARDING_NAME — first contact, waiting for nickname
+  AWAITING_CATEGORY_CONFIRM  — category delete flow (Sprint D1): explicit "ya"/"batal"; "ya" re-counts
+                               active usage before deleting (category create/rename execute immediately,
+                               so they need no state)
+
+  (This supersedes the original draft list, which named
+  AWAITING_CORRECTION_TARGET and AWAITING_ONBOARDING_NAME. Neither was
+  built: corrections ride pending_context (section 7.4) plus the edit
+  flow's target pick, and MVP has no onboarding question — resolving the
+  recorded spec/code mismatch.)
 
 Storage: single `state` + `state_context` (jsonb) column on `users`,
 overwritten on each transition. Not a separate table — this is
