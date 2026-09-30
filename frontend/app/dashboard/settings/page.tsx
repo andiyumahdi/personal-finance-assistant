@@ -22,16 +22,30 @@
 //   handful of friends, not a paid product; a fake "$12/month" plan
 //   would be actively misleading.
 
+import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Lock } from 'lucide-react';
+import { Lock, Pencil, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { AppLayout } from '@/components/layout/app-layout';
 import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { useTheme } from '@/components/theme-provider';
+import type { CategoryEntry } from '@/lib/categories';
 
 function SettingsGroup({
   title,
@@ -59,6 +73,285 @@ const NOTIFICATION_ITEMS = [
   { id: 'n-weekly', label: 'Weekly summary', desc: 'Recap sent every Monday morning.' },
   { id: 'n-goal', label: 'Goal progress', desc: 'When a savings goal is reached.' },
 ];
+
+// Maps the /api/categories error codes (mirroring the chat flow's domain
+// statuses - see backend/src/domain/categories.js) to user-facing copy.
+function describeCategoryError(body: {
+  error?: unknown;
+  reason?: string;
+  activeCount?: number;
+}): string {
+  switch (body.error) {
+    case 'invalid_name':
+      if (body.reason === 'too_short') return 'Names need at least 2 characters.';
+      if (body.reason === 'too_long') return 'Names can be up to 40 characters.';
+      if (body.reason === 'invalid_chars') {
+        return "Use letters, numbers, spaces, and & ' ( ) . - only.";
+      }
+      return 'Type a name first.';
+    case 'duplicate':
+      return 'You already have a category with that name.';
+    case 'duplicate_default':
+      return "That's a built-in category name - pick another one.";
+    case 'too_many':
+      return 'You already have the maximum of 50 custom categories.';
+    case 'default':
+      return 'Built-in categories are locked.';
+    case 'in_use':
+      return `Still used by ${body.activeCount ?? 'some'} active transactions - remove those first.`;
+    case 'not_found':
+      return 'That category no longer exists.';
+    default:
+      return typeof body.error === 'string' && body.error
+        ? body.error
+        : 'Something went wrong. Try again.';
+  }
+}
+
+// Categories section (Sprint D1): reads the same /api/categories the chat
+// channel writes through, so both channels always agree. Defaults are
+// read-only; custom rows get inline rename + an AlertDialog-confirmed
+// delete that stays disabled while the category has active transactions.
+function CategoriesGroup() {
+  const [entries, setEntries] = useState<CategoryEntry[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<CategoryEntry | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    setLoadError(null);
+    fetch('/api/categories')
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to load categories');
+        return res.json();
+      })
+      .then((data) => setEntries(data.categories))
+      .catch((err) =>
+        setLoadError(err instanceof Error ? err.message : 'Failed to load categories'),
+      );
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startRename = (entry: CategoryEntry) => {
+    if (!entry.id) return;
+    setEditingId(entry.id);
+    setEditValue(entry.name);
+    setRenameError(null);
+  };
+
+  const cancelRename = () => {
+    setEditingId(null);
+    setEditValue('');
+    setRenameError(null);
+  };
+
+  const saveRename = async (entry: CategoryEntry) => {
+    if (!entry.id || busy) return;
+    setBusy(true);
+    setRenameError(null);
+    try {
+      const res = await fetch(`/api/categories/${entry.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editValue }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setRenameError(describeCategoryError(body));
+        return;
+      }
+      cancelRename();
+      load(); // refetch so order and counts stay server-truth
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleting?.id || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/categories/${deleting.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        // e.g. a transaction landed between the list load and this click -
+        // the API's commit-time re-count rejects with 409 in_use.
+        const body = await res.json().catch(() => ({}));
+        setDeleteError(describeCategoryError(body));
+      } else {
+        setDeleteError(null);
+      }
+      setDeleting(null);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsGroup
+      title="Categories"
+      description="How Nera labels your transactions. Defaults are built in; add your own in chat."
+    >
+      {loadError ? (
+        <div className="flex items-center gap-3">
+          <p className="text-[13px] text-destructive">{loadError}</p>
+          <Button variant="outline" size="sm" className="h-8 text-[12px]" onClick={load}>
+            Retry
+          </Button>
+        </div>
+      ) : entries === null ? (
+        <p className="text-[13px] text-muted-foreground">Loading categories…</p>
+      ) : (
+        <>
+          <div className="divide-y divide-border/60">
+            {entries.map((entry) => {
+              const rowKey = entry.is_default ? `default-${entry.name}` : entry.id;
+              const isEditing = entry.id !== null && editingId === entry.id;
+              const count = entry.active_transaction_count;
+              return (
+                <div
+                  key={rowKey}
+                  className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
+                >
+                  <div className="min-w-0">
+                    {isEditing ? (
+                      <Input
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void saveRename(entry);
+                          if (e.key === 'Escape') cancelRename();
+                        }}
+                        className="h-8 max-w-60 text-[13px]"
+                        aria-label={`Rename ${entry.name}`}
+                      />
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-[13px] font-medium">{entry.name}</p>
+                        {entry.is_default && (
+                          <Badge variant="secondary" className="gap-1 text-[10.5px]">
+                            <Lock className="h-3 w-3" /> Default
+                          </Badge>
+                        )}
+                      </div>
+                    )}
+                    {isEditing ? (
+                      renameError ? (
+                        <p className="mt-1 text-[11px] text-destructive">{renameError}</p>
+                      ) : (
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          Enter to save · Esc to cancel
+                        </p>
+                      )
+                    ) : count > 0 ? (
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        Used by {count} active transaction{count === 1 ? '' : 's'} — delete is
+                        disabled until none use it
+                      </p>
+                    ) : null}
+                  </div>
+
+                  {entry.is_default ? null : isEditing ? (
+                    <div className="flex shrink-0 gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-[12px]"
+                        onClick={cancelRename}
+                        disabled={busy}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-8 text-[12px]"
+                        onClick={() => void saveRename(entry)}
+                        disabled={busy || editValue.trim() === entry.name}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex shrink-0 gap-1">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8"
+                        title={`Rename ${entry.name}`}
+                        onClick={() => startRename(entry)}
+                        disabled={busy}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        title={
+                          count > 0
+                            ? `Can't delete - used by ${count} active transaction${count === 1 ? '' : 's'}`
+                            : `Delete ${entry.name}`
+                        }
+                        disabled={count > 0 || busy}
+                        onClick={() => {
+                          setDeleteError(null);
+                          setDeleting(entry);
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {deleteError && (
+            <p className="mt-3 text-[12px] text-destructive">{deleteError}</p>
+          )}
+          <p className="mt-4 text-[11px] text-muted-foreground">
+            Add a custom category in chat — e.g. &quot;buat kategori Kopi Langganan&quot; — then
+            rename or delete it here. Chat replies and this list always stay in sync.
+          </p>
+
+          <AlertDialog
+            open={deleting !== null}
+            onOpenChange={(open) => {
+              if (!open) setDeleting(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete &quot;{deleting?.name ?? ''}&quot;?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes the category from your list. Transactions you already deleted keep
+                  their historical label - nothing is rewritten. Active transactions must not use
+                  it, which is why the button is disabled while the count above is above zero.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+                <AlertDialogAction disabled={busy} onClick={() => void confirmDelete()}>
+                  Delete category
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </>
+      )}
+    </SettingsGroup>
+  );
+}
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
@@ -146,6 +439,8 @@ export default function SettingsPage() {
             ))}
           </fieldset>
         </SettingsGroup>
+
+        <CategoriesGroup />
       </div>
     </AppLayout>
   );

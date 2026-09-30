@@ -30,6 +30,12 @@ export default function TransactionsPage() {
   const [search, setSearch] = useState('');
   const [type, setType] = useState('all');
   const [category, setCategory] = useState('all');
+  // Sprint D1: the filter follows the user's ACTIVE category list from
+  // /api/categories (defaults + custom). While it loads - and if the call
+  // fails - the built-in defaults remain the fallback, so the filter never
+  // regresses to an empty list. Historical labels of deleted categories
+  // are deliberately absent: the API only serves active categories.
+  const [categoryOptions, setCategoryOptions] = useState<string[]>(CATEGORIES);
   const debouncedSearch = useDebouncedValue(search, 300);
 
   const load = () => {
@@ -52,6 +58,28 @@ export default function TransactionsPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSearch, type, category]);
+
+  useEffect(() => {
+    fetch('/api/categories')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (Array.isArray(data?.categories)) {
+          setCategoryOptions(
+            data.categories.map((c: { name: string }) => c.name).filter((n: unknown) => typeof n === 'string'),
+          );
+        }
+      })
+      .catch(() => {
+        // keep the built-in defaults as the fallback list
+      });
+  }, []);
+
+  // Keep showing the current selection even if the option list changed
+  // underneath it (e.g. the category was renamed in Settings meanwhile).
+  const filterOptions =
+    category !== 'all' && !categoryOptions.includes(category)
+      ? [...categoryOptions, category]
+      : categoryOptions;
 
   return (
     <AppLayout title="Transactions" subtitle="Everything recorded through WhatsApp">
@@ -82,7 +110,7 @@ export default function TransactionsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All categories</SelectItem>
-              {CATEGORIES.map((c) => (
+              {filterOptions.map((c) => (
                 <SelectItem key={c} value={c}>
                   {c}
                 </SelectItem>
