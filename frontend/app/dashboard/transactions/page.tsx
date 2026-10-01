@@ -3,9 +3,11 @@
 // Transactions page - real backend wiring (Supabase via /api/transactions),
 // replacing Lovable's mock useTransactionsData() hook. Layout adapted from
 // Lovable's src/routes/transactions.tsx - the "Account" filter dropdown and
-// "Export" button were dropped: no account concept exists in our schema
-// (Post-MVP Backlog), and there's no export functionality to wire yet
-// (not requested this sprint, not stubbed as fake-functional either).
+// "Export" button were dropped: there is still NO wallet/account FILTER
+// (Sprint D2 decision J, docs/ROADMAP.md) and there's no export
+// functionality to wire yet (not requested this sprint, not stubbed as
+// fake-functional either). The wallet column itself arrives in Sprint D2
+// via the walletNames map below.
 //
 // Read-only by design: transactions are only ever created via WhatsApp
 // (SPECIFICATION.md section 1.2) - this page has no "add transaction"
@@ -36,6 +38,11 @@ export default function TransactionsPage() {
   // regresses to an empty list. Historical labels of deleted categories
   // are deliberately absent: the API only serves active categories.
   const [categoryOptions, setCategoryOptions] = useState<string[]>(CATEGORIES);
+  // Sprint D2: wallet_id -> name for the Wallet column. Starts EMPTY, so
+  // the column shows "—" until this resolves - and stays there if
+  // /api/wallets fails (e.g. the wallets migration isn't pushed yet).
+  // Fail-closed: the transactions list itself never depends on this call.
+  const [walletNames, setWalletNames] = useState<Record<string, string>>({});
   const debouncedSearch = useDebouncedValue(search, 300);
 
   const load = () => {
@@ -71,6 +78,23 @@ export default function TransactionsPage() {
       })
       .catch(() => {
         // keep the built-in defaults as the fallback list
+      });
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/wallets')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (Array.isArray(data?.wallets)) {
+          const map: Record<string, string> = {};
+          for (const w of data.wallets) {
+            if (typeof w?.id === 'string' && typeof w?.name === 'string') map[w.id] = w.name;
+          }
+          setWalletNames(map);
+        }
+      })
+      .catch(() => {
+        // keep the empty map - the Wallet column simply shows "—"
       });
   }, []);
 
@@ -138,7 +162,7 @@ export default function TransactionsPage() {
             }
           />
         ) : (
-          <TransactionsTable items={items} />
+          <TransactionsTable items={items} walletNames={walletNames} />
         )}
       </div>
     </AppLayout>

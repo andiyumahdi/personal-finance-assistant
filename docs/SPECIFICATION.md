@@ -154,6 +154,7 @@ transactions
 ├── raw_text           text NOT NULL        -- original user message, for audit/debug
 ├── confidence         text CHECK (confidence IN ('high','medium','low'))
 ├── source_message_id  text NOT NULL        -- WhatsApp message id, for dedupe
+├── wallet_id          uuid FK -> wallets.id NULL   -- source of funds; resolved app-side on EVERY write (Sprint D2, decision C) - NULL reads as the default wallet
 ├── deleted_at          timestamptz NULL     -- soft delete
 ├── created_at         timestamptz DEFAULT now()
 
@@ -183,15 +184,25 @@ user_categories
 ├── user_id            uuid FK -> users.id
 ├── name               text NOT NULL    -- 2-40 chars after normalization, see 7.2
 ├── created_at         timestamptz DEFAULT now()
+
+wallets
+├── id                 uuid PK
+├── user_id            uuid FK -> users.id
+├── name               text NOT NULL    -- 2-40 chars after whitespace normalization; per-user unique on lower(name) (Sprint D2)
+├── type               text CHECK (type IN ('cash','bank','e_wallet')) DEFAULT 'cash'   -- decision D
+├── is_default         boolean DEFAULT false   -- exactly ONE per user (partial unique index); renameable, never archivable/deletable
+├── archived_at        timestamptz NULL  -- NULL = active; set = archived (reversible: hidden from NEW recordings only, history/balance intact)
+├── created_at         timestamptz DEFAULT now()
 ```
 
-**Indices:** `transactions(user_id, created_at)`, `transactions(user_id, deleted_at)`, `message_log(wa_message_id)`, `UNIQUE user_categories(user_id, lower(name))` (Sprint D1 - per-user, case-insensitive name uniqueness).
+**Indices:** `transactions(user_id, created_at)`, `transactions(user_id, deleted_at)`, `transactions(user_id, wallet_id)` (Sprint D2 - balance aggregation + delete reference guard), `message_log(wa_message_id)`, `UNIQUE user_categories(user_id, lower(name))` (Sprint D1 - per-user, case-insensitive name uniqueness), `UNIQUE wallets(user_id, lower(name))` (Sprint D2), partial `UNIQUE wallets(user_id) WHERE is_default` (Sprint D2 - the single-default invariant).
 
 **Notes:**
 - No hard deletes anywhere in the transaction table — `deleted_at` only.
 - `users.last_deleted_transaction_id` is the ONLY target an "undo" ever restores (Sprint C): set on a successful delete, cleared on restore so the same transaction can never be undone twice. It is a single pointer, not a "recently deleted" list — there is no undo history beyond it.
 - `pending_context` is a single row per user (upsert pattern), not a growing log — it only ever tracks the *current* open context window.
 - Category Management (Sprint D1, migration `20260930173900_add_user_categories.sql`): the ten defaults live in code, not as rows — only custom categories are rows, strictly per-user. `transactions.category` holds the NAME (no FK), so: deleting a category NEVER touches transactions (soft-deleted history keeps its old label), and renaming cascades only to that user's ACTIVE transactions (`deleted_at IS NULL`). RLS on `user_categories` is enabled with zero policies (same reason as every other table: service-role-only access, see `supabase/README.md`).
+- Wallet / Source Account (Sprint D2, migration `20261001090000_add_wallets.sql`): `wallets` are rows (unlike categories, a transaction references the default wallet BY ID), hence the partial unique index for exactly-one-default and the FK backstop on `transactions.wallet_id`. `wallet_id` is intentionally NULLABLE (decision C): every write resolves a wallet app-side (`domain/wallets.js` `resolveWallet` — resolve-only, silent fallback to the default, default created on demand; NEVER auto-created from message text) and the migration backfills all pre-existing rows to their default, so `NULL` always reads as the default wallet. Lifecycle is application-enforced, no triggers: default renameable but never archivable/deletable; archive (`archived_at`) is reversible and only hides the wallet from NEW recordings; hard DELETE requires ZERO total references (soft-deleted history counts — application count first, FK as backstop). Balance is computed at READ (income − expense over active transactions) — deliberately no balance column (decision E). RLS on `wallets`: enabled, zero policies (same service-role-only model as every other table).
 
 ---
 
@@ -234,7 +245,19 @@ Two consumers: the Baileys backend (writes) and the Next.js dashboard (reads/edi
 
 Defaults are addressed by NAME in `:id` (they have no row — e.g. `DELETE /api/categories/Transport`); custom categories by uuid. Every query carries `user_id = session.user.id` (NextAuth session) in the WHERE clause itself, same ownership pattern as section 4.4. Validation mirrors `backend/src/domain/categories.js` via the copy in `frontend/lib/categories.ts` (separate deployable services — same pattern as the goals contribute logic).
 
-### 4.6 Internal (backend-only, not exposed to dashboard)
+### 4.6 Wallets (Sprint D2)
+Two consumers: the Baileys backend (write path, resolves `wallet_id` on every insert) and the dashboard.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/wallets` | All wallets for the logged-in user (active + archived) — each row: DB columns + computed `balance` (income − expense over ACTIVE transactions) + `transaction_count` (total references, soft-deleted history included). Exactly 2 queries (wallet list + one grouped facts scan), no N+1. Never auto-creates the default wallet (that happens only in the chat write path) |
+| POST | `/api/wallets` | Create — body `{name, type?}` (`type` defaults `cash`, one of `cash\|bank\|e_wallet`) → 201. Errors: `400` + `invalid_name` (with `reason`) / `duplicate` via `409` |
+| PATCH | `/api/wallets/:id` | Exactly ONE of: `{name}` — rename (default wallet allowed; transactions are NEVER touched — no cascade) or `{archived: boolean}` — reversible archive (`403 default` for the default wallet). Also `404 not_found`, `409 duplicate`, `400 invalid_name` |
+| DELETE | `/api/wallets/:id` | Hard delete — only at ZERO total references (soft-deleted history counts), else `409 in_use` + `transaction_count`; `403 default` (default never deletable); `404 not_found` |
+
+Routed through `frontend/app/api/wallets/route.ts` + `[id]/route.ts` with the shared auth/session + `assertUserScope` query layer (`backend/src/db/queries/wallets.js`), fail-closed whenever the `wallets` table does not exist yet (migration not pushed → 500, the Settings group shows a retryable error instead of fabricated data).
+
+### 4.7 Internal (backend-only, not exposed to dashboard)
 These live inside the Baileys backend process, not as public HTTP routes:
 - `extractTransaction(rawText, context)` → calls Gemini extraction layer, returns structured JSON
 - `generateReply(templateData, personaContext)` → calls Gemini persona layer, returns natural-language string
@@ -331,6 +354,13 @@ System instruction:
 - Category MUST be one of the allowed values provided (the ten defaults plus
   the user's own custom categories — Sprint D1). Use "Lainnya" if unsure.
 - You do not calculate anything. You only extract what is stated.
+- "wallet" is OPTIONAL and is only ever a verbatim source-of-funds mention:
+  include it ONLY when the message explicitly names the account the money
+  came from / was paid from (e.g. "dari BCA", "pakai OVO"), copied as plain
+  text. Never infer, guess, or reconstruct a wallet from context; if no
+  account is named, omit the field entirely (Sprint D2 — deliberately the
+  LAST rule: placing it next to the category rule measurably drifted
+  category attribution in the golden set).
 
 Input: {conversation context if any (last transaction, if within window)}
        {allowed category list (defaults + the user's custom categories)}
@@ -344,10 +374,14 @@ Output schema:
   "description": string,
   "is_continuation": boolean,
   "is_correction": boolean,
-  "confidence": "high" | "medium" | "low"
+  "confidence": "high" | "medium" | "low",
+  "wallet": string          -- OPTIONAL (Sprint D2): verbatim source-of-funds
+                             -- mention only; omitted when no account is named
 }
 ```
 Implementation requirement: use Gemini's structured/function-calling output mode, not free-text JSON-in-prompt — always validate against the schema before writing to DB, with a retry-once policy on validation failure.
+
+Wallet resolution (Sprint D2) happens APP-SIDE, never in the model: the caller resolves the extracted string against the user's ACTIVE wallets (exact match after normalization), else falls back silently to their default wallet — wallets are NEVER auto-created from message text (decision G, `resolveWallet`/`ensureDefaultWallet` in `backend/src/domain/wallets.js`).
 
 ### 7.2 Category List (defaults + per-user custom — Sprint D1)
 
@@ -357,7 +391,7 @@ Built-in defaults (closed set, locked — present for every user, not rows in `u
 On top of those, each user may add custom categories (migration `20260930173900_add_user_categories.sql`):
 - **Name rules:** 2–40 characters after whitespace normalization; first char letter/number, then letters/numbers/spaces plus `& ' ( ) . -`; no emoji, slash, or comma (`backend/src/domain/categories.js`, mirrored for the dashboard API in `frontend/lib/categories.ts`).
 - **Uniqueness & cap:** unique per user, case-insensitive (`UNIQUE (user_id, lower(name))`); a custom name may not collide with a default; max 50 custom categories per user.
-- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (enum 14) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
+- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (one of 15 classifier enum values since Sprint D2) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
 - **Delete semantics (locked):** defaults are never deletable (API `403 default`); a category still referenced by ACTIVE transactions is rejected with the count (chat reply / API `409 in_use` + `activeCount`), no confirmation opens; otherwise confirmation in chat ("ya" re-counts at commit time) or Settings dialog. A delete NEVER writes to transactions — soft-deleted history keeps its historical label.
 - **Rename cascade:** only that user's ACTIVE transactions (`deleted_at IS NULL`); other users never touched; defaults not renameable.
 - **Invariant:** every ACTIVE transaction's category is in the user's active list — application-enforced (the DB CHECK on `transactions.category` was dropped in migration `20260930173900` because custom names can't be pre-enumerated).
@@ -588,6 +622,11 @@ States (as implemented):
   AWAITING_CATEGORY_CONFIRM  — category delete flow (Sprint D1): explicit "ya"/"batal"; "ya" re-counts
                                active usage before deleting (category create/rename execute immediately,
                                so they need no state)
+  AWAITING_WALLET_CONFIRM    — wallet delete flow (Sprint D2): explicit "ya"/"batal"; "ya" re-counts
+                               TOTAL transaction references (soft-deleted history included) before
+                               deleting (wallet create/rename/archive/unarchive execute immediately -
+                               archive is reversible - so they need no state); on any recognized
+                               intent the handler hands back to the router (Sprint C pattern)
 
   (This supersedes the original draft list, which named
   AWAITING_CORRECTION_TARGET and AWAITING_ONBOARDING_NAME. Neither was

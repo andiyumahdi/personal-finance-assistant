@@ -23,6 +23,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - **Bikin goal:** ketik sesuatu kayak "mau nabung buat laptop", nanti Nera nanya target nominal dan tanggalnya.
 - **Ubah/hapus transaksi:** tinggal bilang, misal "yang 20rb tadi jadi 25rb" (ubah) atau "hapus yang 20rb" — Nera minta konfirmasi dulu sebelum beneran dihapus. Salah hapus? Ketik "undo" buat balikin transaksi terakhir.
 - **Cari riwayat transaksi:** ketik "cari transaksi makan" atau "cari pengeluaran 20rb", hasilnya maksimal 5 transaksi.
+- **Kelola dompet:** ketik "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri", atau "hapus dompet OVO" — bisa juga lewat dashboard **Settings → Wallets** (detail di bagian **11. Dompet**).
 - **Buka dashboard:** ketik "dashboard" atau "login" ke chat ini, nanti dikirimin link buat connect.
 - **Login (pertama kali):** klik link yang dikirim bot, lanjut login pakai akun Google. Setelah itu, login berikutnya tinggal pakai Google seperti biasa.
 
@@ -40,6 +41,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - Cari riwayat transaksi lewat chat, misal "cari transaksi makan" atau "cari pengeluaran 20rb" — hasil maksimal 5 transaksi
 - Undo transaksi terakhir yang dihapus ("undo" atau "balikin transaksi tadi") — cuma transaksi yang barusan dihapus aja yang bisa dibalikin
 - Kelola kategori lewat chat ("buat kategori …", "ganti nama kategori … jadi …", "hapus kategori …") — detail lengkap di bagian **4. Kategori**
+- Kelola dompet/sumber dana lewat chat ("tambah dompet …", "ganti nama dompet … jadi …", "arsipkan/aktifkan dompet …", "hapus dompet …") — detail lengkap di bagian **11. Dompet**
 
 **Belum tersedia saat ini:**
 - Satu pesan berisi lebih dari satu transaksi sekaligus (misal "beli baju sama sepatu 200rb" belum otomatis kepisah)
@@ -98,13 +100,12 @@ transaksi, analisis, dan progress target.
 - Lihat ke mana aja uang paling banyak kepakai
 - Kelola goals (bikin, edit, tambah kontribusi)
 - Atur tampilan (mode terang/gelap)
+- Kelola dompet/sumber dana (buat, ganti nama, arsip/aktifkan, hapus) di **Settings → Wallets**; saldo tiap dompet kelihatan langsung di situ; halaman Transaksi punya kolom **Dompet** (detail di bagian **11. Dompet**)
 
 **Belum tersedia saat ini:**
 - Tambah/edit transaksi manual dari dashboard (transaksi cuma bisa lewat WhatsApp, itu memang prinsip desainnya — lihat bagian 9)
 - Export data
-
-**Direncanakan di roadmap (Sprint D):**
-- Kelola beberapa akun/dompet berbeda (sekarang semua transaksi dianggap satu "kantong")
+- Filter berdasarkan dompet di halaman Transaksi (kolomnya ada, filternya belum)
 
 ## 8. Login & Keamanan Data
 
@@ -139,11 +140,36 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 - **Kalau aku ganti HP gimana?** Nggak masalah, karena datanya nggak nyimpen di HP — tinggal lanjut chat dari nomor WhatsApp yang sama seperti biasa.
 - **Kalau aku ganti akun Google gimana?** Untuk sekarang belum ada mekanisme buat ganti/sambungin ulang ke akun Google lain — nomor WhatsApp kamu tetap tersambung ke akun Google yang pertama kali dipakai.
 
+## 11. Dompet (Sumber Dana)
+
+**Bisa:**
+- Tiap user punya satu dompet default "Dompet Utama" — transaksi yang nggak nyebut sumber dana otomatis dihitung ke sana
+- Catat transaksi sambil nyebut sumber dananya, misal "bayar netflix dari BCA 200rb" — kalau namanya cocok sama dompet kamu, otomatis nempel; kalau namanya nggak dikenal atau dompetnya udah kearsip, diam-diam dihitung ke dompet default (Nera nggak pernah bikin dompet baru dari nama di pesan)
+- Kelola dompet lewat chat: "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri" / "aktifkan dompet Mandiri", "hapus dompet OVO"
+- Kelola dompet di dashboard: **Settings → Wallets** (buat, ganti nama, arsip/aktifkan, hapus) — plus kolom **Dompet** di halaman Transaksi
+- Saldo tiap dompet = pemasukan − pengeluaran dari transaksi aktif (dihitung langsung tiap dibuka, bukan angka tersimpan)
+- Ganti nama dompet tidak pernah mengubah transaksi — riwayat selalu nunjuk nama dompet terbaru
+
+**Aturan:**
+- Nama dompet 2–40 karakter, unik per user (beda huruf besar/kecil tetap dianggap sama, termasuk nama yang udah diarsip)
+- Dompet default bisa diganti namanya, tapi tidak bisa diarsip atau dihapus
+- Arsip bersifat balik: dompet yang kearsip nggak muncul sebagai pilihan transaksi baru, tapi riwayat dan saldonya tetap utuh — bisa diaktifkan kapan aja
+- Hapus dompet cuma boleh kalau nggak ada satu pun transaksi yang nunjuk ke sana (termasuk transaksi yang udah dihapus); kalau masih ada, Nera nolak dan kasih tahu jumlahnya
+- Tiap user bebas punya banyak dompet dengan jenis tunai / bank / e-wallet; dompet yang dibuat lewat chat selalu masuk jenis tunai
+- Chat dan Settings selalu pakai daftar dompet yang sama
+
+**Belum tersedia saat ini:**
+- Filter berdasarkan dompet di halaman Transaksi (kolomnya aja yang udah ada)
+- Budget dan transfer antar dompet (Sprint D3 / D4)
+- Saldo yang narik langsung dari rekening bank/e-wallet — semua dicatat manual lewat chat
+
 ---
 
 **Status: LOCKED.** Approved as the source of truth for the
 `product_question` prompt content — Sprint B baseline, revised after
 Sprint C shipped (edit / hapus / cari / undo transaksi lewat chat, all
-cross-checked against implemented code). Any future product change (new
+cross-checked against implemented code), then synced after Sprint D1
+(category management) and Sprint D2 (wallet management: chat +
+Settings → Wallets, section 11) shipped. Any future product change (new
 feature, changed behavior) should update this file first, then the
 prompt that's grounded in it — not the other way around.

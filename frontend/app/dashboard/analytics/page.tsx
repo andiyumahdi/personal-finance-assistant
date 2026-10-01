@@ -3,9 +3,10 @@
 // Analytics page - real backend wiring (Supabase via /api/summary, same
 // endpoint the Dashboard uses since the data overlaps). Layout adapted
 // from Lovable's src/routes/analytics.tsx - the "Net worth" KPI card was
-// dropped (needs an accounts/wallets concept that doesn't exist in our
-// schema - Post-MVP Backlog). Replaced with trailing 6-month averages
-// computed from real transactions instead of Lovable's hardcoded numbers.
+// dropped (a wallets concept now exists in the schema - Sprint D2 - but no
+// net-worth aggregate endpoint is wired, so it stays Post-MVP Backlog).
+// Replaced with trailing 6-month averages computed from real transactions
+// instead of Lovable's hardcoded numbers.
 
 import { useEffect, useState } from 'react';
 import { AppLayout } from '@/components/layout/app-layout';

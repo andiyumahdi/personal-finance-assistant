@@ -470,13 +470,66 @@ reviewed batches). Decisions as implemented:
 - **Verification:** backend unit 279, integration 23/23 (real DB), lint
   clean (backend + frontend), `next build` OK.
 
-Open item: migration `20260930173900_add_user_categories.sql` is
-**committed locally but not yet applied** to the live database — applying
-it is a separate, explicitly-approved `supabase db push` step
-(SPECIFICATION.md section 12.4). Until then every D1 category feature
-(chat commands, `/api/categories`) fails closed against the live
-database; the rest of the app is unaffected (the transactions page falls
-back to the built-in category list, and Settings shows a retryable error).
+Open item — **resolved:** migration `20260930173900_add_user_categories.sql`
+was applied to the live database during D1 finalization (together with
+the commit/push of the D1 work); no D1 item remains open.
+
+**D2 Wallet / Source Account ✅ DONE** (item 2 above; delivered in five
+reviewed batches). Decisions as implemented:
+- **Two channels, one feature:** dashboard (`GET/POST/PATCH/DELETE
+  /api/wallets`, SPECIFICATION.md section 4.6 + a `Wallets` group in
+  Settings; the transactions table gained a `Wallet` column, NO new
+  filter) and WhatsApp chat (new `wallet_manage` intent, classifier enum
+  15, checked AFTER `category_manage` so "tambah kategori Dompet Baru"
+  still routes to categories; a rename needs the dedicated markers
+  "ganti nama dompet X jadi Y" / "rename …" — a bare "ganti dompet jadi
+  X" stays a `transaction_edit`).
+- **Schema:** new `wallets` table (per-user; `type` CHECK
+  `cash|bank|e_wallet`; per-user unique on `lower(name)`; exactly one
+  default per user via partial unique index `WHERE is_default`; RLS
+  enabled, zero policies) + migration
+  `20261001090000_add_wallets.sql`, which also adds nullable
+  `transactions.wallet_id` (FK) and backfills every pre-existing row to
+  its owner's default `Dompet Utama`. Nullable by decision C: the app
+  resolves a wallet on every write and `NULL` reads as the default.
+- **Lifecycle (locked, option O1):** default wallet renameable but
+  never archivable/deletable; archive (`archived_at`) is reversible and
+  only hides the wallet from NEW recordings (history/balance intact);
+  hard delete only at ZERO total references (soft-deleted history
+  counts) — in use → rejected with the count (immediate chat reply / API
+  `409 in_use` + `transaction_count`); balance computed at READ (income
+  − expense over active transactions), no balance column (decision E);
+  chat-created wallets are always type `cash`.
+- **Write path (Batch 4):** resolve-only — `resolveWallet` matches the
+  extracted verbatim mention against ACTIVE wallets after normalization,
+  else silently falls back to the default (created on demand for new
+  users); a wallet is NEVER auto-created from message text (decision G).
+  Extraction gained the optional `wallet` field (schema property + rule
+  appended LAST — placing the rule next to the category rule drifted
+  `bayar netflix` Hiburan→Tagihan in the golden set, so order was
+  measured, not guessed), `EXTRACTION_PROMPT_VERSION = v2026-10-01.1`,
+  classifier prompt bumped to `v2026-10-01.1` for enum 15; golden re-run
+  15/15 per SPECIFICATION.md section 12.3. If wallet resolution throws
+  at write time (e.g. table not present yet), recording degrades to
+  `wallet_id = NULL` with `trace.walletResolution = 'degraded'` instead
+  of failing the save.
+- **Chat flow:** new state `AWAITING_WALLET_CONFIRM` (8th state) for
+  the delete ONLY — pre-check plus commit-time re-count of TOTAL
+  references (soft-deleted included); create/rename/archive/unarchive
+  execute immediately; a recognized intent hands back to the router
+  (Sprint C pattern); static replies, no persona.
+- **Verification:** backend unit 435, integration 23/23 (real DB),
+  golden 15/15, lint clean (backend + frontend), `next build` OK.
+
+Open item: migration `20261001090000_add_wallets.sql` exists **locally
+only — not yet committed and not applied to the live database**.
+Committing it and applying it (`supabase db push`) are separate,
+explicitly-approved steps (SPECIFICATION.md section 12.4). Until the
+push, every D2 wallet feature fails closed against the live database
+(`/api/wallets` → 500 with a retryable Settings error, the transactions
+`Wallet` column shows `-`, chat wallet commands reply with an error);
+transaction recording itself keeps working — writes carry
+`wallet_id = NULL`, which reads as the default wallet.
 
 ### Sprint E — Intelligence
 

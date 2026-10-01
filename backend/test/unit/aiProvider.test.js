@@ -75,6 +75,36 @@ describe('validateExtractionResult (pure, no Gemini call)', () => {
   });
 });
 
+describe('validateExtractionResult wallet field (Sprint D2 / B4)', () => {
+  test('accepts wallet omitted (the common case - no wallet named)', () => {
+    assert.deepEqual(validateExtractionResult(validBase), { valid: true });
+    assert.equal(Object.hasOwn(validBase, 'wallet'), false, 'fixture has no wallet key');
+  });
+
+  test('accepts a wallet string', () => {
+    assert.deepEqual(validateExtractionResult({ ...validBase, wallet: 'BCA' }), { valid: true });
+  });
+
+  test('accepts wallet = null (resolver treats it as absent)', () => {
+    assert.deepEqual(validateExtractionResult({ ...validBase, wallet: null }), { valid: true });
+  });
+
+  test('accepts an empty string (normalizeWalletName treats it as absent downstream)', () => {
+    assert.deepEqual(validateExtractionResult({ ...validBase, wallet: '' }), { valid: true });
+  });
+
+  test('rejects a non-string wallet (number)', () => {
+    const result = validateExtractionResult({ ...validBase, wallet: 123 });
+    assert.equal(result.valid, false);
+    assert.match(result.reason, /wallet must be a string/);
+  });
+
+  test('rejects a non-string wallet (object)', () => {
+    const result = validateExtractionResult({ ...validBase, wallet: { name: 'BCA' } });
+    assert.equal(result.valid, false);
+  });
+});
+
 describe('validateExtractionResult with an explicit allowed list (D1)', () => {
   test('accepts a custom category when the allowed list includes it', () => {
     const result = validateExtractionResult(

@@ -24,7 +24,7 @@
 
 import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Lock, Pencil, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, Lock, Pencil, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { AppLayout } from '@/components/layout/app-layout';
 import { Card, CardContent } from '@/components/ui/card';
@@ -45,7 +45,18 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useTheme } from '@/components/theme-provider';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { formatCurrency } from '@/lib/format';
 import type { CategoryEntry } from '@/lib/categories';
+import {
+  DEFAULT_WALLET_TYPE,
+  isValidWalletType,
+  validateWalletName,
+  WALLET_TYPES,
+  WALLET_TYPE_LABELS,
+  type WalletEntry,
+  type WalletType,
+} from '@/lib/wallets';
 
 function SettingsGroup({
   title,
@@ -353,6 +364,420 @@ function CategoriesGroup() {
   );
 }
 
+// Maps the /api/wallets error codes (mirroring the chat flow's domain
+// statuses - see backend/src/domain/wallets.js) to user-facing copy.
+function describeWalletError(body: {
+  error?: unknown;
+  reason?: string;
+  transaction_count?: number;
+}): string {
+  switch (body.error) {
+    case 'invalid_name':
+      if (body.reason === 'too_short') return 'Names need at least 2 characters.';
+      if (body.reason === 'too_long') return 'Names can be up to 40 characters.';
+      if (body.reason === 'invalid_chars') {
+        return "Use letters, numbers, spaces, and & ' ( ) . - only.";
+      }
+      return 'Type a name first.';
+    case 'invalid_type':
+      return 'Pick a supported type: Cash, Bank, or E-Wallet.';
+    case 'duplicate':
+      return 'You already have a wallet with that name.';
+    case 'default':
+      return "The default wallet can't be archived or deleted.";
+    case 'in_use':
+      return `Still referenced by ${body.transaction_count ?? 'some'} transactions - delete is disabled until none use it.`;
+    case 'not_found':
+      return 'That wallet no longer exists.';
+    case 'invalid_request':
+      return 'Nothing to change.';
+    default:
+      return typeof body.error === 'string' && body.error
+        ? body.error
+        : 'Something went wrong. Try again.';
+  }
+}
+
+// Wallets section (Sprint D2): reads the same /api/wallets the chat
+// channel writes through, so both channels always agree. The default
+// wallet is renameable (decision A) but locked for archive/delete;
+// other wallets get inline rename, a REVERSIBLE archive toggle (lifecycle
+// O1 - no confirm dialog, nothing is destroyed), and an
+// AlertDialog-confirmed hard delete that stays disabled while ANY
+// transaction - active or soft-deleted history - references the wallet
+// (total count, decision B). Balance is displayed, never edited: it is
+// always computed at read time (decision E).
+function WalletsGroup() {
+  const [entries, setEntries] = useState<WalletEntry[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [createName, setCreateName] = useState('');
+  const [createType, setCreateType] = useState<WalletType>(DEFAULT_WALLET_TYPE);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<WalletEntry | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    setLoadError(null);
+    fetch('/api/wallets')
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to load wallets');
+        return res.json();
+      })
+      .then((data) => setEntries(data.wallets))
+      .catch((err) =>
+        setLoadError(err instanceof Error ? err.message : 'Failed to load wallets'),
+      );
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const createWallet = async () => {
+    if (busy) return;
+    setCreateError(null);
+    // Client-side pre-check with the mirrored rules - the API re-runs
+    // the exact same validation regardless (fail-closed server truth).
+    const validated = validateWalletName(createName);
+    if (!validated.ok) {
+      setCreateError(describeWalletError({ error: 'invalid_name', reason: validated.reason }));
+      return;
+    }
+    if (!isValidWalletType(createType)) {
+      setCreateError(describeWalletError({ error: 'invalid_type' }));
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch('/api/wallets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: validated.name, type: createType }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setCreateError(describeWalletError(body));
+        return;
+      }
+      setCreateName('');
+      setCreateType(DEFAULT_WALLET_TYPE);
+      load(); // refetch so order, balances and counts stay server-truth
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startRename = (entry: WalletEntry) => {
+    setEditingId(entry.id);
+    setEditValue(entry.name);
+    setRenameError(null);
+  };
+
+  const cancelRename = () => {
+    setEditingId(null);
+    setEditValue('');
+    setRenameError(null);
+  };
+
+  const saveRename = async (entry: WalletEntry) => {
+    if (busy) return;
+    setBusy(true);
+    setRenameError(null);
+    try {
+      const res = await fetch(`/api/wallets/${entry.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editValue }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setRenameError(describeWalletError(body));
+        return;
+      }
+      cancelRename();
+      load(); // no cascade for wallets - rows reference the id, history shows the new name
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleArchive = async (entry: WalletEntry) => {
+    if (busy || entry.is_default) return;
+    setRowError(null);
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/wallets/${entry.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived: !entry.archived_at }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setRowError(describeWalletError(body));
+        return;
+      }
+      load(); // reversible, no transactions touched
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleting?.id || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/wallets/${deleting.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        // e.g. a transaction landed between the list load and this click -
+        // the API's commit-time re-count rejects with 409 in_use.
+        const body = await res.json().catch(() => ({}));
+        setDeleteError(describeWalletError(body));
+      } else {
+        setDeleteError(null);
+      }
+      setDeleting(null);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsGroup
+      title="Wallets"
+      description="Where your money sits - cash, bank, or e-wallet. One default wallet backs every transaction that names none."
+    >
+      {loadError ? (
+        <div className="flex items-center gap-3">
+          <p className="text-[13px] text-destructive">{loadError}</p>
+          <Button variant="outline" size="sm" className="h-8 text-[12px]" onClick={load}>
+            Retry
+          </Button>
+        </div>
+      ) : entries === null ? (
+        <p className="text-[13px] text-muted-foreground">Loading wallets…</p>
+      ) : (
+        <>
+          <div className="divide-y divide-border/60">
+            {entries.map((entry) => {
+              const isEditing = editingId === entry.id;
+              const count = entry.transaction_count;
+              return (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
+                >
+                  <div className="min-w-0">
+                    {isEditing ? (
+                      <Input
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void saveRename(entry);
+                          if (e.key === 'Escape') cancelRename();
+                        }}
+                        className="h-8 max-w-60 text-[13px]"
+                        aria-label={`Rename ${entry.name}`}
+                      />
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate text-[13px] font-medium">{entry.name}</p>
+                        {entry.is_default && (
+                          <Badge variant="secondary" className="gap-1 text-[10.5px]">
+                            <Lock className="h-3 w-3" /> Default
+                          </Badge>
+                        )}
+                        {entry.archived_at && (
+                          <Badge variant="outline" className="text-[10.5px]">
+                            Archived
+                          </Badge>
+                        )}
+                      </div>
+                    )}
+                    {isEditing ? (
+                      renameError ? (
+                        <p className="mt-1 text-[11px] text-destructive">{renameError}</p>
+                      ) : (
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          Enter to save · Esc to cancel
+                        </p>
+                      )
+                    ) : (
+                      <div className="mt-0.5 space-y-0.5">
+                        <p className="text-[11px] text-muted-foreground">
+                          {WALLET_TYPE_LABELS[entry.type]} · Balance {formatCurrency(entry.balance)}
+                        </p>
+                        {count > 0 && (
+                          <p className="text-[11px] text-muted-foreground">
+                            Referenced by {count} transaction{count === 1 ? '' : 's'} — delete is
+                            disabled until none use it
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {isEditing ? (
+                    <div className="flex shrink-0 gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-[12px]"
+                        onClick={cancelRename}
+                        disabled={busy}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-8 text-[12px]"
+                        onClick={() => void saveRename(entry)}
+                        disabled={busy || editValue.trim() === entry.name}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex shrink-0 gap-1">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8"
+                        title={`Rename ${entry.name}`}
+                        onClick={() => startRename(entry)}
+                        disabled={busy}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      {!entry.is_default && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8"
+                          title={
+                            entry.archived_at
+                              ? `Restore ${entry.name}`
+                              : `Archive ${entry.name} (reversible - keeps history and balance)`
+                          }
+                          onClick={() => void toggleArchive(entry)}
+                          disabled={busy}
+                        >
+                          {entry.archived_at ? (
+                            <ArchiveRestore className="h-3.5 w-3.5" />
+                          ) : (
+                            <Archive className="h-3.5 w-3.5" />
+                          )}
+                        </Button>
+                      )}
+                      {!entry.is_default && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 text-destructive hover:text-destructive"
+                          title={
+                            count > 0
+                              ? `Can't delete - referenced by ${count} transaction${count === 1 ? '' : 's'}`
+                              : `Delete ${entry.name}`
+                          }
+                          disabled={count > 0 || busy}
+                          onClick={() => {
+                            setDeleteError(null);
+                            setDeleting(entry);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <Input
+              value={createName}
+              onChange={(e) => setCreateName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void createWallet();
+              }}
+              placeholder="New wallet name — e.g. BCA Debit"
+              className="h-9 flex-1 text-[13px]"
+              aria-label="New wallet name"
+            />
+            <Select
+              value={createType}
+              onValueChange={(v) => setCreateType(v as WalletType)}
+            >
+              <SelectTrigger className="h-9 w-full text-[13px] sm:w-32" aria-label="Wallet type">
+                <SelectValue placeholder="Type" />
+              </SelectTrigger>
+              <SelectContent>
+                {WALLET_TYPES.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {WALLET_TYPE_LABELS[t]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              className="h-9 text-[12px]"
+              onClick={() => void createWallet()}
+              disabled={busy}
+            >
+              Add wallet
+            </Button>
+          </div>
+          {createError && <p className="mt-2 text-[12px] text-destructive">{createError}</p>}
+
+          {deleteError && (
+            <p className="mt-3 text-[12px] text-destructive">{deleteError}</p>
+          )}
+          {rowError && <p className="mt-3 text-[12px] text-destructive">{rowError}</p>}
+
+          <p className="mt-4 text-[11px] text-muted-foreground">
+            Balance is income minus expense across your active transactions — always computed
+            fresh, never stored. Archived wallets stop being offered for new transactions but
+            keep their history and balance.
+          </p>
+
+          <AlertDialog
+            open={deleting !== null}
+            onOpenChange={(open) => {
+              if (!open) setDeleting(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete &quot;{deleting?.name ?? ''}&quot;?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This permanently removes the wallet. It is only allowed while no transaction —
+                  not even deleted history — references it, which is why the button is disabled
+                  while the count above is above zero.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+                <AlertDialogAction disabled={busy} onClick={() => void confirmDelete()}>
+                  Delete wallet
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </>
+      )}
+    </SettingsGroup>
+  );
+}
+
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const { data: session } = useSession();
@@ -441,6 +866,8 @@ export default function SettingsPage() {
         </SettingsGroup>
 
         <CategoriesGroup />
+
+        <WalletsGroup />
       </div>
     </AppLayout>
   );

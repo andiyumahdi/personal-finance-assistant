@@ -24,6 +24,7 @@ import * as messageLogQueries from '../db/queries/messageLog.js';
 import { aiProvider } from '../ai/aiProvider.js';
 import * as transactionsDomain from '../domain/transactions.js';
 import * as categoriesDomain from '../domain/categories.js';
+import * as walletsDomain from '../domain/wallets.js';
 import * as goalsDomain from '../domain/goals.js';
 import * as contextDomain from '../domain/context.js';
 import { calculateTotals } from '../domain/summary.js';
@@ -44,6 +45,12 @@ export const STATES = {
   // rename execute immediately; only deletion is destructive enough to
   // require an explicit "ya").
   AWAITING_CATEGORY_CONFIRM: 'AWAITING_CATEGORY_CONFIRM',
+  // Sprint D2 (Wallet Management): confirmation for the ONE destructive
+  // wallet operation - the irreversible hard delete. Same AWAITING_*
+  // pattern as the others; create, rename, archive and unarchive all
+  // execute immediately (archiving is reversible by decision, so it
+  // never asks for a "ya").
+  AWAITING_WALLET_CONFIRM: 'AWAITING_WALLET_CONFIRM',
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +126,24 @@ const CATEGORY_DELETE_VERBS = ['hapus', 'delete', 'buang'];
 // keep routing to transaction_edit (change a TRANSACTION's category),
 // exactly as pre-D1 routing asserted.
 const CATEGORY_RENAME_PATTERN = /\brename\b|\bganti\s+nama\b/;
+
+// Sprint D2 (Wallet Management) routing signals - same shape as D1's:
+// the word "dompet"/"wallet" (or "dompetnya") is REQUIRED plus a
+// dedicated verb, so none of these can steal a message that merely
+// contains a verb ("beli dompet baru 200rb" stays a transaction; "isi
+// dompet 50rb" stays a transaction). category_manage is still checked
+// FIRST in detectIntent: "tambah kategori Dompet Baru" creates a
+// CATEGORY whose name mentions a wallet and must not be stolen here.
+const WALLET_WORD_PATTERN = /\b(?:dompet|wallet)(?:nya)?\b/;
+const WALLET_CREATE_VERBS = ['tambah', 'tambahin', 'buat', 'bikin'];
+const WALLET_DELETE_VERBS = ['hapus', 'delete', 'buang'];
+const WALLET_ARCHIVE_VERBS = ['arsip', 'arsipkan', 'arsipin', 'archive'];
+const WALLET_UNARCHIVE_VERBS = ['aktifkan', 'aktifin', 'unarchive', 'restore'];
+// Same dedicated rename markers as categories: "ganti nama dompet X jadi
+// Y" or "rename dompet ...". A bare "ganti dompet jadi X" is deliberately
+// NOT a rename command (it falls through to the edit rules, exactly like
+// D1's "ganti kategori jadi X").
+const WALLET_RENAME_PATTERN = /\brename\b|\bganti\s+nama\b/;
 
 // Signals that a message is plausibly about a transaction - checked BEFORE
 // calling Gemini extraction, so an obviously non-financial message doesn't
@@ -243,6 +268,42 @@ const CATEGORY_DELETE_REASK_REPLY =
   'Masih mau hapus kategorinya? Balas "ya" buat hapus atau "batal" buat batalin.';
 const CATEGORY_DELETE_CANCEL_REPLY = 'Oke, nggak jadi dihapus 👍';
 
+// ---------------------------------------------------------------------------
+// Sprint D2 static replies (D2 Wallet Management) - same convention as the
+// Sprint C/D1 blocks above: string literals on purpose, not persona-
+// generated. Dynamic outcomes (name/count dependent) are built inline in
+// the handlers, mirroring runCategoryCreate/performDelete.
+// ---------------------------------------------------------------------------
+const WALLET_USAGE_HELP_REPLY =
+  'Mau atur dompet? Bisa lewat chat:\n' +
+  '- "tambah dompet BRI"\n' +
+  '- "ganti nama dompet BRI jadi BRI Giro"\n' +
+  '- "arsipkan dompet Mandiri" / "aktifkan dompet Mandiri"\n' +
+  '- "hapus dompet OVO"';
+const WALLET_CREATE_ASK_REPLY =
+  'Mau bikin dompet apa? Sebutin namanya ya, misal "tambah dompet BRI".';
+const WALLET_RENAME_ASK_REPLY =
+  'Mau ganti nama dompet apa jadi apa? Misal "ganti nama dompet BRI jadi BRI Giro".';
+const WALLET_ARCHIVE_ASK_REPLY =
+  'Mau arsipkan dompet apa? Sebutin namanya ya, misal "arsipkan dompet Mandiri".';
+const WALLET_UNARCHIVE_ASK_REPLY =
+  'Mau aktifkan dompet apa? Sebutin namanya ya, misal "aktifkan dompet Mandiri".';
+const WALLET_DELETE_ASK_REPLY =
+  'Mau hapus dompet apa? Sebutin namanya ya, misal "hapus dompet OVO".';
+const WALLET_INVALID_NAME_REPLY =
+  'Hmm, nama itu belum bisa dipakai 🙏 Minimal 2 karakter, maksimal 40, huruf/angka/spasi aja (misal "BCA Debit").';
+const WALLET_INVALID_TYPE_REPLY = 'Tipe dompet cuma bisa cash, bank, atau e-wallet ya 🙏';
+const WALLET_RENAME_UNCHANGED_REPLY = 'Namanya emang udah gitu kok 👌';
+const WALLET_NOT_FOUND_REPLY =
+  'Nggak ketemu dompetnya nih 🙏 Cek dulu nama dompetnya ya.';
+const WALLET_DELETE_DEFAULT_REPLY = 'Dompet default nggak bisa dihapus ya 🙏';
+const WALLET_ARCHIVE_DEFAULT_REPLY = 'Dompet default nggak bisa diarsipkan ya 🙏';
+const WALLET_ARCHIVE_ALREADY_REPLY = 'Udah kearsip kok 👌';
+const WALLET_UNARCHIVE_ALREADY_REPLY = 'Emang udah aktif kok 👌';
+const WALLET_DELETE_REASK_REPLY =
+  'Masih mau hapus dompetnya? Balas "ya" buat hapus atau "batal" buat batalin.';
+const WALLET_DELETE_CANCEL_REPLY = 'Oke, nggak jadi dihapus 👍';
+
 /**
  * Cheap, deterministic check for "does this message plausibly describe a
  * transaction" - a number/amount-unit, or a common transaction verb.
@@ -316,6 +377,25 @@ function isCategoryManageRequest(lower) {
 }
 
 /**
+ * Sprint D2: is this message about managing a WALLET (create / rename /
+ * archive / restore / delete), as opposed to recording a transaction
+ * that merely mentions a wallet? Same discipline as D1: goal language
+ * keeps its own routing (isExcludedFromSprintC), and the wallet word is
+ * REQUIRED alongside a dedicated verb.
+ */
+function isWalletManageRequest(lower) {
+  if (isExcludedFromSprintC(lower)) return false;
+  if (!WALLET_WORD_PATTERN.test(lower)) return false;
+  if (WALLET_RENAME_PATTERN.test(lower)) return true;
+  return (
+    WALLET_CREATE_VERBS.some((verb) => containsWord(lower, verb)) ||
+    WALLET_DELETE_VERBS.some((verb) => containsWord(lower, verb)) ||
+    WALLET_ARCHIVE_VERBS.some((verb) => containsWord(lower, verb)) ||
+    WALLET_UNARCHIVE_VERBS.some((verb) => containsWord(lower, verb))
+  );
+}
+
+/**
  * Cheap, deterministic intent pre-filter. Runs BEFORE any Gemini call so
  * that obviously-non-transaction messages (recap requests, greetings,
  * help questions, small talk) don't waste an extraction call - and,
@@ -326,7 +406,11 @@ function isCategoryManageRequest(lower) {
  * Ordering: Sprint D1's category_manage runs first - it needs the word
  * "kategori" plus a dedicated verb, and would otherwise be swallowed by
  * the transaction rules below ("hapus kategori Kopi" -> delete,
- * "ganti nama kategori ..." -> edit). Then Sprint C intents
+ * "ganti nama kategori ..." -> edit). Then Sprint D2's wallet_manage,
+ * same discipline with the words "dompet"/"wallet" - and behind
+ * category_manage on purpose, so "tambah kategori Dompet Baru" (a
+ * CATEGORY whose name mentions a wallet) stays a category command. Then
+ * Sprint C intents
  * (undo/delete/edit/search) - they are explicit action verbs that must
  * win over the older keyword blocks ("cari pengeluaran 20rb" would
  * otherwise match recap's "pengeluaran"; "hapus yang 25rb" would
@@ -338,6 +422,7 @@ export function detectIntent(rawText) {
   const lower = rawText.toLowerCase().trim();
 
   if (isCategoryManageRequest(lower)) return 'category_manage';
+  if (isWalletManageRequest(lower)) return 'wallet_manage';
   if (isUndoRequest(lower)) return 'transaction_undo';
   if (isDeleteRequest(lower)) return 'transaction_delete';
   if (isEditRequest(lower)) return 'transaction_edit';
@@ -642,6 +727,63 @@ export function parseCategoryManageMessage(rawText) {
   }
 
   if (CATEGORY_CREATE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    return tail ? { action: 'create', name: tail } : { action: 'create', incomplete: true };
+  }
+
+  return { action: null };
+}
+
+/**
+ * Sprint D2: parses a wallet_manage message into one of:
+ *   { action: 'create'|'delete'|'archive'|'unarchive', name }  - complete
+ *   { action: 'rename', oldName, newName }                     - complete
+ *   { action: ..., incomplete: true } - verb found but the name (or the
+ *     "jadi <new>" part) is missing - caller asks.
+ *   { action: null } - not a wallet command (detection was wrong, or the
+ *     classifier routed a vague message here).
+ * Same shape and rules as parseCategoryManageMessage: matching runs on
+ * the RAW text so names keep the user's original casing ("BCA Debit",
+ * not "bca debit"); only the verb checks are case-insensitive. Word
+ * order must follow the documented command shapes: "<verb> dompet <name>"
+ * / "ganti nama dompet <old> jadi <new>".
+ */
+export function parseWalletManageMessage(rawText) {
+  const raw = String(rawText ?? '').trim();
+  const marker = WALLET_WORD_PATTERN.exec(raw);
+  if (!marker) return { action: null };
+
+  const prefix = raw.slice(0, marker.index);
+  const prefixLower = prefix.toLowerCase();
+  const tail = raw
+    .slice(marker.index + marker[0].length)
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .replace(/[.!?]+$/u, '')
+    .trim();
+
+  if (WALLET_RENAME_PATTERN.test(prefixLower)) {
+    const split = tail.split(/\b(jadi|menjadi)\b/i);
+    if (split.length < 3) return { action: 'rename', incomplete: true };
+    const oldName = split[0].trim();
+    const newName = split.slice(2).join(' ').trim();
+    if (!oldName || !newName) return { action: 'rename', incomplete: true };
+    return { action: 'rename', oldName, newName };
+  }
+
+  if (WALLET_DELETE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    return tail ? { action: 'delete', name: tail } : { action: 'delete', incomplete: true };
+  }
+
+  // unarchive BEFORE archive: their verb sets don't overlap today, but the
+  // order documents intent precedence if they ever do.
+  if (WALLET_UNARCHIVE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    return tail ? { action: 'unarchive', name: tail } : { action: 'unarchive', incomplete: true };
+  }
+
+  if (WALLET_ARCHIVE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    return tail ? { action: 'archive', name: tail } : { action: 'archive', incomplete: true };
+  }
+
+  if (WALLET_CREATE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
     return tail ? { action: 'create', name: tail } : { action: 'create', incomplete: true };
   }
 
@@ -992,6 +1134,39 @@ async function handleUnclearIntent() {
   };
 }
 
+/**
+ * Sprint D2 (B4): resolves the wallet id for a NEW transaction write.
+ *
+ * Decision G: resolve-only inference - the extraction's `wallet` name is
+ * matched against the caller's own ACTIVE wallets (case-insensitive) and
+ * anything else (empty / unknown / ARCHIVED) silently falls back to the
+ * default wallet, which domain resolveWallet creates on demand for new
+ * users. A wallet is NEVER created from message text here.
+ *
+ * Degraded mode (decision C - wallet_id is nullable by design, and the
+ * read side attributes NULL facts to the default wallet anyway): if
+ * wallet resolution itself throws - e.g. this code reaches a database
+ * where migration 20261001090000 has not been applied yet - recording
+ * MUST still succeed with wallet_id = null rather than crash the whole
+ * pipeline. Wallet resolution must never block recording a transaction;
+ * the trace records the degradation so it stays observable.
+ */
+async function resolveWalletIdForWrite(userId, rawName, trace) {
+  try {
+    const wallet = await walletsDomain.resolveWallet(userId, rawName);
+    trace.walletResolved = {
+      id: wallet.id,
+      name: wallet.name,
+      isDefault: wallet.is_default,
+    };
+    return wallet.id;
+  } catch (error) {
+    trace.walletResolution = 'degraded';
+    trace.walletResolutionError = error?.message ?? String(error);
+    return null;
+  }
+}
+
 /** The only handler that calls Gemini extraction. */
 async function handleTransactionIntent(user, rawText, trace) {
   const pendingContext = await contextDomain.getPendingContext(user.id);
@@ -1088,6 +1263,7 @@ async function handleTransactionIntent(user, rawText, trace) {
     confidence: extraction.confidence,
     source_message_id: generateLocalMessageId(),
     prompt_version: extraction.prompt_version,
+    wallet_id: await resolveWalletIdForWrite(user.id, extraction.wallet, trace),
   });
   trace.dbAction = { type: 'insert_transaction', transaction: created };
 
@@ -1640,6 +1816,304 @@ async function handleAwaitingCategoryConfirm(user, rawText, trace) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Sprint D2 (Wallet Management) handlers - same (user, rawText, trace)
+// signature and the same rules as the blocks above: static replies (no
+// persona call), create/rename/archive/unarchive execute immediately, and
+// delete is the only flow that gets a confirmation state
+// (AWAITING_WALLET_CONFIRM) because it is the only irreversible one -
+// archiving is reversible by decision, so it never asks for a "ya".
+// EVERY operation goes through domain/wallets.js: ownership scoping,
+// validation, the default-wallet protections, the archive lifecycle and
+// the zero-reference delete guard all live there (Batch 1) - this block
+// only parses the message, maps statuses to replies, and stores state.
+// ---------------------------------------------------------------------------
+
+/**
+ * EXACT (case-insensitive) resolution of a manage-command target against
+ * the user's OWN wallets (active AND archived - an archived wallet can
+ * still be renamed, restored, or deleted). Deliberately NOT the fuzzy
+ * resolveWallet: a destructive action must never fire on a prefix
+ * collision ("BRI" vs "BRI Syariah"), and inference fallbacks belong to
+ * transaction recording, not to management commands.
+ * Returns { kind: 'wallet', row } | { kind: 'not_found', name } | { kind: 'empty' }.
+ */
+async function resolveWalletForManage(userId, rawName) {
+  const name = walletsDomain.normalizeWalletName(rawName);
+  if (!name) return { kind: 'empty' };
+  const wallets = await walletsDomain.listWallets(userId);
+  const row = wallets.find((w) => w.name.toLowerCase() === name.toLowerCase());
+  if (row) return { kind: 'wallet', row };
+  return { kind: 'not_found', name };
+}
+
+async function runWalletCreate(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name) {
+    return { reply: WALLET_CREATE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // Type is never parsed from chat: creates always use the default type
+  // ('cash'), so domain's invalid_type is unreachable here (defensive).
+  const result = await walletsDomain.createWallet(user.id, parsed.name);
+  trace.walletOutcome = result.status;
+
+  if (result.status === 'created') {
+    trace.dbAction = { type: 'insert_wallet', wallet: result.wallet };
+    return {
+      reply: `Oke, dompet "${result.wallet.name}" udah kubikin 👍`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (result.status === 'invalid_name') {
+    return { reply: WALLET_INVALID_NAME_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'invalid_type') {
+    return { reply: WALLET_INVALID_TYPE_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  // duplicate - including a unique-index race caught at insert time
+  const name = walletsDomain.normalizeWalletName(parsed.name) || parsed.name;
+  return {
+    reply: `Udah ada dompet "${name}" nih. Coba nama lain ya.`,
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+async function runWalletRename(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.oldName || !parsed.newName) {
+    return { reply: WALLET_RENAME_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const resolution = await resolveWalletForManage(user.id, parsed.oldName);
+  if (resolution.kind === 'empty') {
+    return { reply: WALLET_RENAME_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind !== 'wallet') {
+    return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // The DEFAULT wallet is renameable (approved decision A) - domain
+  // enforces that; there is no default guard here on purpose. Domain
+  // rename NEVER writes to transactions (decision I): rows reference the
+  // wallet id, history simply shows the new name.
+  const result = await walletsDomain.renameWallet(user.id, resolution.row.id, parsed.newName);
+  trace.walletOutcome = result.status;
+
+  if (result.status === 'renamed') {
+    trace.dbAction = { type: 'rename_wallet', from: result.from, to: result.to };
+    return {
+      reply:
+        `Oke, dompet "${result.from}" udah ganti jadi "${result.to}" ✅\n` +
+        'Riwayat transaksi tetap aman — nggak ada yang diubah, mereka otomatis nunjukin nama terbaru.',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (result.status === 'unchanged') {
+    return { reply: WALLET_RENAME_UNCHANGED_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'invalid_name') {
+    return { reply: WALLET_INVALID_NAME_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'duplicate') {
+    const name = walletsDomain.normalizeWalletName(parsed.newName) || parsed.newName;
+    return {
+      reply: `Udah ada dompet "${name}" nih. Coba nama lain ya.`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  // not_found: the row vanished between resolution and rename (race)
+  return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+async function runWalletArchive(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name) {
+    return { reply: WALLET_ARCHIVE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const resolution = await resolveWalletForManage(user.id, parsed.name);
+  if (resolution.kind === 'empty') {
+    return { reply: WALLET_ARCHIVE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind !== 'wallet') {
+    return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const result = await walletsDomain.archiveWallet(user.id, resolution.row.id);
+  trace.walletOutcome = result.status;
+
+  if (result.status === 'archived') {
+    trace.dbAction = { type: 'archive_wallet', name: result.name };
+    return {
+      reply:
+        `Oke, dompet "${result.name}" udah diarsipkan 👍\n` +
+        'Nggak jadi pilihan buat transaksi baru, tapi riwayat & saldo tetap aman. Bisa diaktifin lagi kapan aja.',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (result.status === 'default') {
+    return { reply: WALLET_ARCHIVE_DEFAULT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'unchanged') {
+    return { reply: WALLET_ARCHIVE_ALREADY_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+async function runWalletUnarchive(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name) {
+    return { reply: WALLET_UNARCHIVE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const resolution = await resolveWalletForManage(user.id, parsed.name);
+  if (resolution.kind === 'empty') {
+    return { reply: WALLET_UNARCHIVE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind !== 'wallet') {
+    return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const result = await walletsDomain.unarchiveWallet(user.id, resolution.row.id);
+  trace.walletOutcome = result.status;
+
+  if (result.status === 'unarchived') {
+    trace.dbAction = { type: 'unarchive_wallet', name: result.name };
+    return {
+      reply: `Oke, dompet "${result.name}" udah aktif lagi 👍`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (result.status === 'unchanged') {
+    return { reply: WALLET_UNARCHIVE_ALREADY_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+async function runWalletDelete(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name) {
+    return { reply: WALLET_DELETE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const resolution = await resolveWalletForManage(user.id, parsed.name);
+  if (resolution.kind === 'empty') {
+    return { reply: WALLET_DELETE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind !== 'wallet') {
+    return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // Default wallet is protected BEFORE anything else (decision A): no
+  // count, no confirmation question - same "reject early" shape as D1.
+  if (resolution.row.is_default) {
+    return { reply: WALLET_DELETE_DEFAULT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // Read-only pre-check: the domain counts TOTAL references - active AND
+  // soft-deleted history (decision B; the FK would reject the delete
+  // anyway). In use -> reject immediately WITH the count, no confirmation
+  // (mirrors D1's category delete, with the stronger total-count rule).
+  const usage = await walletsDomain.getWalletUsage(user.id, resolution.row.id);
+  trace.walletUsage = usage;
+  if (usage.status !== 'ok') {
+    return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (usage.transactionCount > 0) {
+    return {
+      reply:
+        `"${resolution.row.name}" masih direferensikan ${usage.transactionCount} transaksi ` +
+        '(termasuk riwayat), jadi nggak bisa dihapus 🙏 Nol referensi baru boleh dihapus.',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  return {
+    reply:
+      `Hapus dompet "${resolution.row.name}"?\n\n` +
+      'Nggak ada transaksi yang nunjuk ke dompet ini. Balas "ya" buat hapus, atau "batal" buat batalin.',
+    newState: STATES.AWAITING_WALLET_CONFIRM,
+    newStateContext: {
+      pendingWalletId: resolution.row.id,
+      walletName: resolution.row.name,
+    },
+  };
+}
+
+async function handleWalletManageIntent(user, rawText, trace) {
+  const parsed = parseWalletManageMessage(rawText);
+  trace.walletParsed = parsed;
+
+  if (parsed.action === 'create') return runWalletCreate(user, parsed, trace);
+  if (parsed.action === 'rename') return runWalletRename(user, parsed, trace);
+  if (parsed.action === 'archive') return runWalletArchive(user, parsed, trace);
+  if (parsed.action === 'unarchive') return runWalletUnarchive(user, parsed, trace);
+  if (parsed.action === 'delete') return runWalletDelete(user, parsed, trace);
+  return { reply: WALLET_USAGE_HELP_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+/**
+ * Commit phase of the wallet delete flow. deleteWallet re-counts
+ * internally on this call - that IS the commit-time guard: a transaction
+ * recorded between the confirmation question and this "ya" cancels the
+ * delete with an accurate count instead of silently breaking the FK that
+ * ties history to wallets. "batal"/"tidak" cancels without touching
+ * anything.
+ */
+async function handleAwaitingWalletConfirm(user, rawText, trace) {
+  const ctx = user.state_context || {};
+  const confirmation = parseConfirmationReply(rawText);
+
+  if (confirmation === 'yes') {
+    const result = await walletsDomain.deleteWallet(user.id, ctx.pendingWalletId);
+    trace.walletOutcome = result.status;
+
+    if (result.status === 'deleted') {
+      trace.dbAction = { type: 'delete_wallet', name: result.name };
+      return {
+        reply: `Oke, dompet "${result.name}" udah kuhapus 👍`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    if (result.status === 'in_use') {
+      return {
+        reply:
+          `Eh, ternyata "${result.name}" udah dipakai ${result.transactionCount} transaksi — ` +
+          'jadinya nggak jadi kuhapus 🙏',
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    if (result.status === 'default') {
+      // Unreachable through the normal flow (defaults never open a
+      // confirmation) - defensive, in case state_context was tampered with.
+      return { reply: WALLET_DELETE_DEFAULT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+    }
+    // not_found: the wallet vanished while the confirmation was open.
+    return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  if (confirmation === 'no') {
+    return { reply: WALLET_DELETE_CANCEL_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // Hand-back rule, same as the other confirm phases (Sprint C/D1): any
+  // other recognized intent - a transaction, a goal, a fresh wallet or
+  // category command - drops the pending confirmation and re-routes, so
+  // this state can never trap the conversation; only 'unclear' re-asks.
+  if (detectIntent(rawText) !== 'unclear') return handleIdle(user, rawText, trace);
+
+  return {
+    reply: WALLET_DELETE_REASK_REPLY,
+    newState: STATES.AWAITING_WALLET_CONFIRM,
+    newStateContext: ctx,
+  };
+}
+
 // Dispatch table: to add a new intent later, write one handler above with
 // the (user, rawText, trace) signature and add one line here - handleIdle
 // itself never needs to change. Exported so tests can assert it stays in
@@ -1658,6 +2132,7 @@ export const INTENT_HANDLERS = {
   transaction_delete: handleTransactionDelete,
   transaction_undo: handleTransactionUndo,
   category_manage: handleCategoryManageIntent,
+  wallet_manage: handleWalletManageIntent,
   unclear: handleUnclearIntent,
 };
 
@@ -1710,6 +2185,10 @@ async function handleAwaitingDirection(user, rawText, trace) {
     confidence: 'high',
     source_message_id: generateLocalMessageId(),
     prompt_version: pending.prompt_version,
+    // Sprint D2/B4: pendingExtraction is the FULL ambiguous-extraction
+    // object, so its `wallet` field (if any) survives into this deferred
+    // write and gets the same resolve-only treatment as the direct path.
+    wallet_id: await resolveWalletIdForWrite(user.id, pending.wallet, trace),
   });
   trace.dbAction = { type: 'insert_transaction', transaction: created };
 
@@ -1906,6 +2385,9 @@ export async function handleIncomingMessage(phoneNumber, rawText, waMessageId = 
         break;
       case STATES.AWAITING_CATEGORY_CONFIRM:
         result = await handleAwaitingCategoryConfirm(user, rawText, trace);
+        break;
+      case STATES.AWAITING_WALLET_CONFIRM:
+        result = await handleAwaitingWalletConfirm(user, rawText, trace);
         break;
       case STATES.IDLE:
       default:

@@ -73,6 +73,13 @@ export function validateExtractionResult(result, allowed = CATEGORIES) {
   ) {
     return { valid: false, reason: 'amount must be a number, null, or omitted' };
   }
+  if (
+    result.wallet !== undefined &&
+    result.wallet !== null &&
+    typeof result.wallet !== 'string'
+  ) {
+    return { valid: false, reason: 'wallet must be a string, null, or omitted' };
+  }
   return { valid: true };
 }
 

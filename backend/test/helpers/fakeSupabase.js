@@ -13,7 +13,12 @@
 //     { data: null, count: n } - the aggregate head-count used by the D1
 //     delete guard;
 //   - every call is recorded in db.calls so tests can assert things like
-//     "search only ever issued SELECTs" (read-only proof).
+//     "search only ever issued SELECTs" (read-only proof);
+//   - db.failNext(table, op, message?) arms ONE-shot failure injection:
+//     the next matching call resolves { data: null, error: { message } }
+//     (and is still recorded in db.calls), so tests can prove degraded
+//     paths such as B4 wallet resolution against a database where the
+//     wallets migration has not been applied yet.
 //
 // Deliberately throws on any unsupported op/filter so a query-layer change
 // that starts using a new builder method fails tests loudly instead of
@@ -45,6 +50,13 @@ const TABLE_DEFAULTS = {
   message_log: () => ({ processed_at: nowIso() }),
   user_categories: () => ({
     id: crypto.randomUUID(),
+    created_at: nowIso(),
+  }),
+  wallets: () => ({
+    id: crypto.randomUUID(),
+    type: 'cash',
+    is_default: false,
+    archived_at: null,
     created_at: nowIso(),
   }),
   goals: () => ({
@@ -213,6 +225,18 @@ class FakeQuery {
       payload: this.payload && typeof this.payload === 'object' ? { ...this.payload } : null,
     });
 
+    // One-shot injected failure (db.failNext): resolves the supabase-js
+    // { data, error } contract for an erroring call - the query layer
+    // then throws it, exactly as a real PostgREST error (e.g. a missing
+    // table) would.
+    const failureIndex = this.db.failures.findIndex(
+      (failure) => failure.table === this.table && (failure.op === '*' || failure.op === this.op),
+    );
+    if (failureIndex !== -1) {
+      const [failure] = this.db.failures.splice(failureIndex, 1);
+      return { data: null, error: { message: failure.message } };
+    }
+
     const rows = this._rows();
     const matched = rows.filter((row) =>
       this.filters.every((filter) => matchesFilter(row, filter)),
@@ -300,11 +324,16 @@ export function createFakeSupabase(seedTables = {}) {
       ...seedTables,
     },
     calls: [],
+    failures: [],
     from(table) {
       return new FakeQuery(db, table);
     },
     resetCalls() {
       db.calls = [];
+    },
+    /** Arms a one-shot failure for the next call matching table+op ('*' matches any op). */
+    failNext(table, op = '*', message = 'injected fake failure') {
+      db.failures.push({ table, op, message });
     },
   };
   return db;

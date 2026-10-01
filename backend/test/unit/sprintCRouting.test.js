@@ -144,9 +144,10 @@ describe('classifier enum <-> handler map sync (Sprint C mandate)', () => {
 });
 
 describe('Sprint C states exist alongside the existing ones', () => {
-  test('STATES keeps pre-Sprint-C states; Sprint C added two, Sprint D1 one more', () => {
-    // Lock updated in Sprint D1 (AWAITING_CATEGORY_CONFIRM) - the state
-    // list, classifier enum, and handler map must always move together.
+  test('STATES keeps pre-Sprint-C states; Sprint C added two, D1 one more, D2 one more', () => {
+    // Lock updated in Sprint D1 (AWAITING_CATEGORY_CONFIRM) and Sprint D2
+    // (AWAITING_WALLET_CONFIRM) - the state list, classifier enum, and
+    // handler map must always move together.
     assert.deepEqual(Object.keys(STATES), [
       'IDLE',
       'AWAITING_DIRECTION',
@@ -155,6 +156,7 @@ describe('Sprint C states exist alongside the existing ones', () => {
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
+      'AWAITING_WALLET_CONFIRM',
     ]);
   });
 });

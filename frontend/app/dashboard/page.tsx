@@ -3,8 +3,9 @@
 // Main dashboard - real backend wiring (Supabase via /api/summary),
 // replacing Lovable's mock useDashboardData() hook entirely, same pattern
 // as the Goals page. Layout ported from Lovable's src/routes/dashboard.tsx
-// with two sections dropped (not just hidden): "Net worth" (needs an
-// accounts/wallets concept - Post-MVP Backlog) and "Budgets" (needs a
+// with two sections dropped (not just hidden): "Net worth" (a wallets
+// concept exists since Sprint D2, but no net-worth aggregate endpoint is
+// wired - still Post-MVP Backlog) and "Budgets" (needs a
 // budgets table that doesn't exist - also Post-MVP Backlog). See
 // docs/SPECIFICATION.md section 2 and docs/ROADMAP.md.
 

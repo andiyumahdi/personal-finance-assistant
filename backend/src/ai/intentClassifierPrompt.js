@@ -11,7 +11,7 @@
 // extractionPrompt.js, which pulls out full transaction data. This call
 // only answers "what is the user trying to do", nothing more.
 
-export const INTENT_CLASSIFIER_PROMPT_VERSION = 'v2026-09-30.2';
+export const INTENT_CLASSIFIER_PROMPT_VERSION = 'v2026-10-01.1';
 
 // Keep this list in sync with the canonical intent names used by
 // whatsapp/messageHandler.js's INTENT_HANDLERS map - both the rule-based
@@ -33,6 +33,7 @@ export const INTENT_CATEGORIES = [
   'transaction_delete',
   'transaction_undo',
   'category_manage',
+  'wallet_manage',
   'unclear',
 ];
 
@@ -51,6 +52,7 @@ Categories and what they mean:
 - "transaction_delete": the user wants to REMOVE an existing recorded transaction, e.g. paraphrases of "hapus transaksi makan tadi".
 - "transaction_undo": the user wants to bring back the transaction they just deleted, e.g. paraphrases of "undo" or "balikin transaksi yang barusan dihapus".
 - "category_manage": the user wants to CREATE, RENAME, or DELETE a transaction CATEGORY in their own category list, e.g. paraphrases of "tambah kategori Kopi", "ganti nama kategori Kopi jadi Kopi Pagi", or "hapus kategori Kopi" - organizing their categories, NOT changing or removing an existing transaction (see transaction_edit / transaction_delete).
+- "wallet_manage": the user wants to CREATE, RENAME, ARCHIVE, RESTORE (un-archive), or DELETE a wallet (their source of funds - cash, bank account, or e-wallet) in their own wallet list, e.g. paraphrases of "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Giro", "arsipkan dompet Mandiri", or "hapus dompet OVO" - managing their wallets, NOT recording a transaction (see transaction) or changing an existing one (see transaction_edit). Asking WHETHER a feature exists stays a product_question.
 - "small_talk": a short acknowledgment, thanks, or casual remark that doesn't need substantive engagement (e.g. "sip", "makasih", "oke").
 - "unclear": none of the above genuinely fit, or the message's intent truly can't be determined even with careful reading.
 

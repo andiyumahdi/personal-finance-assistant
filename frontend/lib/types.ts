@@ -23,6 +23,10 @@ export type Transaction = {
   confidence: 'high' | 'medium' | 'low' | null;
   source_message_id: string;
   prompt_version: string | null;
+  // Sprint D2: nullable in the DB (migration 20261001090000) - rows
+  // created before the migration was pushed simply lack the field until
+  // the backfill assigns them a wallet.
+  wallet_id: string | null;
   deleted_at: string | null;
   created_at: string;
 };

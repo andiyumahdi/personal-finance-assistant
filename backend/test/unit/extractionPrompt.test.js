@@ -17,10 +17,10 @@ import {
 import { CATEGORIES } from '../../src/config/categories.js';
 
 describe('EXTRACTION_PROMPT_VERSION (SPECIFICATION.md section 12.3)', () => {
-  test('pinned to the D1 per-user-enum version', () => {
+  test('pinned to the B4 optional-wallet-field version', () => {
     // Bump this whenever the prompt or schema changes, then re-run
     // npm run test:golden (aiExtraction.test.js) before committing.
-    assert.equal(EXTRACTION_PROMPT_VERSION, 'v2026-09-30.1');
+    assert.equal(EXTRACTION_PROMPT_VERSION, 'v2026-10-01.1');
   });
 });
 
@@ -85,6 +85,30 @@ describe('buildExtractionResponseSchema', () => {
       'is_correction',
       'confidence',
     ]);
+  });
+
+  test('B4: wallet is an OPTIONAL string appended after every Sprint A-C property', () => {
+    const schema = buildExtractionResponseSchema(['Kopi Langganan']);
+    assert.deepEqual(schema.properties.wallet, { type: 'string' });
+    assert.equal(
+      schema.required.includes('wallet'),
+      false,
+      'wallet must stay optional - omitting it is a valid result',
+    );
+    assert.deepEqual(
+      Object.keys(schema.properties),
+      [
+        'type',
+        'amount',
+        'category',
+        'description',
+        'is_continuation',
+        'is_correction',
+        'confidence',
+        'wallet',
+      ],
+      'pre-B4 property order preserved byte-for-byte; wallet appended last',
+    );
   });
 
   test('each call returns a fresh object (no shared mutable schema)', () => {

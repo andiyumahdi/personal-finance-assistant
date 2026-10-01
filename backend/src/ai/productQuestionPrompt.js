@@ -12,7 +12,7 @@
 // (forbidden phrases, no inventing features) - both apply to this
 // prompt's output.
 
-export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-09-30';
+export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-10-01';
 
 const KNOWLEDGE_BASE = `
 PRINSIP NERA:
@@ -27,14 +27,18 @@ CARA PAKAI:
 - Bikin goal: ketik "mau nabung buat ...", nanti ditanya target dan tanggal.
 - Ubah/hapus transaksi: tinggal bilang, misal "yang 20rb tadi jadi 25rb" atau "hapus yang 20rb" (selalu minta konfirmasi "ya"/"batal" dulu). Salah hapus? ketik "undo".
 - Cari riwayat transaksi: "cari transaksi makan" atau "cari pengeluaran 20rb", hasil maksimal 5 transaksi.
+- Kelola dompet: "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri" / "aktifkan dompet Mandiri", "hapus dompet OVO" — juga bisa lewat dashboard, Settings → Wallets.
 - Buka dashboard: ketik "dashboard" atau "login", nanti dikirim link.
 - Login pertama kali: klik link dari bot, login pakai Google. Setelahnya tinggal pakai Google biasa.
 
 TRANSAKSI - BISA: catat natural tanpa format khusus; deteksi otomatis expense/income/kategori/nominal; transaksi beruntun otomatis kepisah; koreksi transaksi terakhir dalam window singkat ("eh salah, tadi 15rb"); kalau arah uang ambigu ditanya dulu; kalau nominal nggak disebut ditanya nominalnya; EDIT transaksi lewat chat ("yang 20rb tadi jadi 25rb", "ubah kategorinya jadi makanan"); HAPUS transaksi lewat chat dengan konfirmasi "ya"/"batal" dulu ("hapus yang 20rb"); CARI riwayat transaksi lewat chat ("cari transaksi makan"), hasil maksimal 5; UNDO transaksi terakhir yang dihapus ("undo"), cuma transaksi yang barusan dihapus yang bisa dibalikin.
 TRANSAKSI - BELUM TERSEDIA: satu pesan berisi lebih dari satu transaksi sekaligus.
 
-KATEGORI - BISA: Nera otomatis pilih dari daftar kategori bawaan (contoh: Makanan & Minuman, Transport, Belanja, Tagihan, Hiburan, dll).
-KATEGORI - DIRENCANAKAN (Sprint D): bikin kategori sendiri, edit/kelola kategori.
+KATEGORI - BISA: Nera otomatis pilih dari daftar kategori bawaan (contoh: Makanan & Minuman, Transport, Belanja, Tagihan, Hiburan, dll); kategori bawaan bisa dipakai tapi nggak bisa diganti/dihapus; kelola kategori sendiri lewat chat - "tambah/buat/bikin kategori Kopi", "ganti nama kategori Kopi jadi Kopi Pagi" (transaksi aktif ikut keganti), "hapus kategori Kopi" (konfirmasi "ya"/"batal"; kalau masih dipakai transaksi aktif ditolak + dikasih jumlahnya); ganti nama/hapus juga di dashboard Settings - Categories.
+KATEGORI - BELUM TERSEDIA: bikin kategori langsung dari dashboard (create masih lewat chat).
+
+DOMPET - BISA: tiap user punya dompet default "Dompet Utama" buat transaksi yang nggak nyebut sumber dana; catat transaksi sambil nyebut sumber dananya ("bayar netflix dari BCA 200rb") - nempel kalau namanya cocok sama dompet kamu, kalau nggak dikenal diam-dipindah ke dompet default (Nera nggak pernah bikin dompet baru dari nama pesan); kelola lewat chat - "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah" (riwayat nggak berubah), "arsipkan/aktifkan dompet Mandiri" (arsip balik lagi kapan aja, cuma hilang dari pilihan baru), "hapus dompet OVO" (konfirmasi "ya"/"batal"; ditolak kalau masih dipakai transaksi - termasuk yang udah dihapus - atau kalau itu dompet default); saldo (pemasukan - pengeluaran transaksi aktif) + kelola juga di dashboard Settings - Wallets, plus kolom "Dompet" di halaman Transaksi.
+DOMPET - BELUM TERSEDIA: filter dompet di halaman Transaksi, budget, transfer antar dompet, saldo otomatis dari rekening bank/e-wallet.
 
 REKAP - BISA: minta kapan aja lewat chat; otomatis mingguan (Senin) dan bulanan (tanggal 1) kalau ada transaksi; isinya total pemasukan/pengeluaran/saldo periode itu.
 REKAP - BELUM TERSEDIA: rekap custom per rentang tanggal, rekap per kategori spesifik lewat chat.
@@ -43,9 +47,8 @@ GOALS - BISA: bikin goal baru lewat chat; progress otomatis update tiap kontribu
 GOALS - BELUM TERSEDIA: edit/kontribusi ke goal lewat chat, hapus goal.
 
 DASHBOARD - fungsinya lihat kondisi keuangan lebih lengkap dari yang bisa ditampilin di chat: grafik, riwayat transaksi, analisis, progress goal.
-DASHBOARD - BISA: ringkasan bulan ini + progress vs bulan lalu; tren beberapa bulan (grafik); cari/filter transaksi; breakdown pengeluaran; kelola goals; ganti tampilan terang/gelap.
-DASHBOARD - BELUM TERSEDIA: tambah/edit transaksi manual dari dashboard (transaksi cuma lewat WhatsApp, ini prinsip desain), export data.
-DASHBOARD - DIRENCANAKAN (Sprint D): kelola beberapa akun/dompet berbeda.
+DASHBOARD - BISA: ringkasan bulan ini + progress vs bulan lalu; tren beberapa bulan (grafik); cari/filter transaksi; breakdown pengeluaran; kelola goals; ganti tampilan terang/gelap; kelola dompet (buat, ganti nama, arsip/aktifkan, hapus) di Settings → Wallets dengan saldo tiap dompet, plus kolom "Dompet" di halaman Transaksi.
+DASHBOARD - BELUM TERSEDIA: tambah/edit transaksi manual dari dashboard (transaksi cuma lewat WhatsApp, ini prinsip desain), export data, filter dompet di halaman Transaksi.
 
 LOGIN & KEAMANAN - BISA: login pakai Google; login pertama kali WAJIB lewat link khusus dari bot WhatsApp (ini yang menyambungkan Google ke nomor WA); login berikutnya tinggal Google biasa; nomor WhatsApp adalah identitas utama, bukan email.
 LOGIN & KEAMANAN - BELUM TERSEDIA: ganti nomor WhatsApp yang tersambung; satu akun Google ke lebih dari satu nomor WA (sengaja dibatasi demi keamanan).
