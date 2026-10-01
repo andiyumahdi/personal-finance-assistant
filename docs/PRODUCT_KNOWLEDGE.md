@@ -24,6 +24,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - **Ubah/hapus transaksi:** tinggal bilang, misal "yang 20rb tadi jadi 25rb" (ubah) atau "hapus yang 20rb" — Nera minta konfirmasi dulu sebelum beneran dihapus. Salah hapus? Ketik "undo" buat balikin transaksi terakhir.
 - **Cari riwayat transaksi:** ketik "cari transaksi makan" atau "cari pengeluaran 20rb", hasilnya maksimal 5 transaksi.
 - **Kelola dompet:** ketik "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri", atau "hapus dompet OVO" — bisa juga lewat dashboard **Settings → Wallets** (detail di bagian **11. Dompet**).
+- **Atur budget:** ketik "tambah budget Makanan 500rb", "ubah budget Makanan jadi 750rb", atau "hapus budget Makanan" — patokan belanja bulanan per kategori (detail di bagian **12. Budget**).
 - **Buka dashboard:** ketik "dashboard" atau "login" ke chat ini, nanti dikirimin link buat connect.
 - **Login (pertama kali):** klik link yang dikirim bot, lanjut login pakai akun Google. Setelah itu, login berikutnya tinggal pakai Google seperti biasa.
 
@@ -42,6 +43,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - Undo transaksi terakhir yang dihapus ("undo" atau "balikin transaksi tadi") — cuma transaksi yang barusan dihapus aja yang bisa dibalikin
 - Kelola kategori lewat chat ("buat kategori …", "ganti nama kategori … jadi …", "hapus kategori …") — detail lengkap di bagian **4. Kategori**
 - Kelola dompet/sumber dana lewat chat ("tambah dompet …", "ganti nama dompet … jadi …", "arsipkan/aktifkan dompet …", "hapus dompet …") — detail lengkap di bagian **11. Dompet**
+- Kelola budget lewat chat ("tambah budget …", "ubah budget … jadi …", "hapus budget …") — detail lengkap di bagian **12. Budget**
 
 **Belum tersedia saat ini:**
 - Satu pesan berisi lebih dari satu transaksi sekaligus (misal "beli baju sama sepatu 200rb" belum otomatis kepisah)
@@ -51,13 +53,13 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 **Bisa:**
 - Nera otomatis memilih kategori dari daftar aktif kamu: 10 kategori bawaan (Makanan & Minuman, Transport, Belanja, Tagihan, Hiburan, dll) plus kategori buatanmu sendiri
 - Bikin kategori sendiri lewat chat, misal "buat kategori Kopi Langganan"
-- Ganti nama kategori lewat chat ("ganti nama kategori Kopi jadi Kopi Pagi") atau di dashboard **Settings → Categories** — transaksi aktif kamu ikut keganti otomatis
+- Ganti nama kategori lewat chat ("ganti nama kategori Kopi jadi Kopi Pagi") atau di dashboard **Settings → Categories** — transaksi aktif dan budget kamu ikut keganti otomatis
 - Hapus kategori sendiri lewat chat ("hapus kategori Kopi") atau di Settings → Categories
 - Pantau daftar kategori + jumlah transaksi aktif per kategori di Settings → Categories; filter kategori di halaman Transaksi ikut daftar terbaru
 
 **Aturan:**
 - Kategori bawaan nggak bisa diganti namanya atau dihapus (di Settings tampil terkunci)
-- Kategori yang masih dipakai transaksi aktif nggak bisa dihapus — Nera kasih tahu jumlahnya; transaksi yang sudah dihapus (soft-delete) tetap menyimpan label lamanya
+- Kategori yang masih dipakai transaksi aktif atau budget nggak bisa dihapus — Nera kasih tahu jumlahnya; transaksi yang sudah dihapus (soft-delete) tetap menyimpan label lamanya
 - Maksimal 50 kategori sendiri per user; nama harus unik per user (gak bisa duplikat, termasuk nama bawaan)
 - Chat dan Settings selalu pakai daftar kategori yang sama
 
@@ -101,11 +103,13 @@ transaksi, analisis, dan progress target.
 - Kelola goals (bikin, edit, tambah kontribusi)
 - Atur tampilan (mode terang/gelap)
 - Kelola dompet/sumber dana (buat, ganti nama, arsip/aktifkan, hapus) di **Settings → Wallets**; saldo tiap dompet kelihatan langsung di situ; halaman Transaksi punya kolom **Dompet** (detail di bagian **11. Dompet**)
+- Pantau budget bulanan per kategori di kartu **Budget**: tiap kategori menampilkan berapa terpakai vs target bulan ini plus persentasenya (lebih dari 100% tampil merah) — kelola budget-nya lewat chat (detail di bagian **12. Budget**)
 
 **Belum tersedia saat ini:**
 - Tambah/edit transaksi manual dari dashboard (transaksi cuma bisa lewat WhatsApp, itu memang prinsip desainnya — lihat bagian 9)
 - Export data
 - Filter berdasarkan dompet di halaman Transaksi (kolomnya ada, filternya belum)
+- Tambah/ubah/hapus budget dari dashboard (kartu Budget tampilan baca — kelola lewat chat)
 
 ## 8. Login & Keamanan Data
 
@@ -160,8 +164,28 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 
 **Belum tersedia saat ini:**
 - Filter berdasarkan dompet di halaman Transaksi (kolomnya aja yang udah ada)
-- Budget dan transfer antar dompet (Sprint D3 / D4)
+- Transfer antar dompet (Sprint D4)
 - Saldo yang narik langsung dari rekening bank/e-wallet — semua dicatat manual lewat chat
+
+## 12. Budget (Anggaran Bulanan)
+
+**Bisa:**
+- Set budget bulanan per kategori lewat chat, misal "tambah budget Makanan 500rb" — berlaku sebagai patokan tetap tiap bulan, bukan sekali pakai
+- Lihat progres budget di kartu **Budget** (halaman utama dashboard): tiap kategori nunjukin berapa terpakai vs target bulan ini + persentasenya (merah kalau udah lebih), lengkap sama label dompet kalau budget-nya khusus satu dompet
+- Ubah nominal budget lewat chat, misal "ubah budget Makanan jadi 750rb"
+- Hapus budget lewat chat, misal "hapus budget Makanan" — Nera minta konfirmasi "ya"/"batal" dulu, sama kayak hapus transaksi
+- Semua angka dihitung ulang dari transaksi aktif bulan berjalan tiap kali dibuka — transaksi yang dihapus nggak dihitung, jadi nggak ada angka basi
+
+**Aturan:**
+- Chat selalu pakai satu budget per kategori yang berlaku untuk semua dompet; budget khusus 1 dompet cuma bisa dibuat lewat API (satu per dompet per kategori, belum ada UI/chat-nya)
+- Kategori harus dari daftar aktif kamu (bawaan atau buatan sendiri) dan namanya harus jelas — kalau ada lebih dari satu kategori yang mirip, Nera nolak dan nanya dulu, nggak nebak
+- Tambah dan ubah budget langsung dieksekusi; hapus selalu minta konfirmasi dulu
+- Ganti nama kategori → budget ikut keganti otomatis; kategori yang masih dipakai budget nggak bisa dihapus (Nera kasih tahu jumlahnya)
+
+**Belum tersedia saat ini:**
+- Tambah/ubah/hapus budget dari dashboard (kartu Budget cuma tampilan baca — kelola lewat chat)
+- Budget selain bulanan (misal mingguan)
+- Notifikasi kalau budget hampir atau udah lewat batas
 
 ---
 
@@ -170,6 +194,6 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 Sprint C shipped (edit / hapus / cari / undo transaksi lewat chat, all
 cross-checked against implemented code), then synced after Sprint D1
 (category management) and Sprint D2 (wallet management: chat +
-Settings → Wallets, section 11) shipped. Any future product change (new
+Settings → Wallets, section 11) shipped, then after Sprint D3 (budget: chat commands + the read-only Budgets card, section 12). Any future product change (new
 feature, changed behavior) should update this file first, then the
 prompt that's grounded in it — not the other way around.

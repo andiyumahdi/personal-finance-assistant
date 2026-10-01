@@ -25,6 +25,7 @@ import { aiProvider } from '../ai/aiProvider.js';
 import * as transactionsDomain from '../domain/transactions.js';
 import * as categoriesDomain from '../domain/categories.js';
 import * as walletsDomain from '../domain/wallets.js';
+import * as budgetsDomain from '../domain/budgets.js';
 import * as goalsDomain from '../domain/goals.js';
 import * as contextDomain from '../domain/context.js';
 import { calculateTotals } from '../domain/summary.js';
@@ -51,6 +52,11 @@ export const STATES = {
   // execute immediately (archiving is reversible by decision, so it
   // never asks for a "ya").
   AWAITING_WALLET_CONFIRM: 'AWAITING_WALLET_CONFIRM',
+  // Sprint D3 (Budget Management): confirmation for the ONE destructive
+  // budget operation - delete. Same AWAITING_* pattern as the others; a
+  // budget create or amount update executes immediately (an amount is
+  // trivially editable afterwards, so it never needs a "ya").
+  AWAITING_BUDGET_CONFIRM: 'AWAITING_BUDGET_CONFIRM',
 };
 
 // ---------------------------------------------------------------------------
@@ -144,6 +150,19 @@ const WALLET_UNARCHIVE_VERBS = ['aktifkan', 'aktifin', 'unarchive', 'restore'];
 // NOT a rename command (it falls through to the edit rules, exactly like
 // D1's "ganti kategori jadi X").
 const WALLET_RENAME_PATTERN = /\brename\b|\bganti\s+nama\b/;
+
+// Sprint D3 (Budget Management) routing signals - same shape as D1/D2:
+// the word "budget" (or "budgetnya") is REQUIRED plus a dedicated verb,
+// so none of these can steal a message that merely contains a verb
+// ("beli budget baru 200rb" stays a transaction) and none of the older
+// rules can swallow a budget command ("hapus budget Makanan" would
+// otherwise hit the transaction-delete rule). Deliberately NO "anggaran"
+// synonym: the documented command shapes all say "budget", and a second
+// spelling would only widen the collision surface.
+const BUDGET_WORD_PATTERN = /\bbudget(?:nya)?\b/;
+const BUDGET_CREATE_VERBS = ['tambah', 'tambahin', 'buat', 'bikin'];
+const BUDGET_UPDATE_VERBS = ['ubah', 'update', 'rubah', 'ganti'];
+const BUDGET_DELETE_VERBS = ['hapus', 'delete', 'buang'];
 
 // Signals that a message is plausibly about a transaction - checked BEFORE
 // calling Gemini extraction, so an obviously non-financial message doesn't
@@ -304,6 +323,36 @@ const WALLET_DELETE_REASK_REPLY =
   'Masih mau hapus dompetnya? Balas "ya" buat hapus atau "batal" buat batalin.';
 const WALLET_DELETE_CANCEL_REPLY = 'Oke, nggak jadi dihapus 👍';
 
+// ---------------------------------------------------------------------------
+// Sprint D3 static replies (D3 Budget Management) - same convention as the
+// Sprint C/D1/D2 blocks above: string literals on purpose, not persona-
+// generated. Dynamic outcomes (category/amount dependent) are built inline
+// in the handlers, mirroring runCategoryCreate/runWalletCreate.
+// ---------------------------------------------------------------------------
+const BUDGET_USAGE_HELP_REPLY =
+  'Mau atur budget? Bisa lewat chat:\n' +
+  '- "tambah budget Makanan 500rb"\n' +
+  '- "ubah budget Makanan jadi 750rb"\n' +
+  '- "hapus budget Makanan"';
+const BUDGET_CREATE_ASK_REPLY =
+  'Mau bikin budget kategori apa dan berapa nominalnya? Misal "tambah budget Makanan 500rb".';
+const BUDGET_UPDATE_ASK_REPLY =
+  'Mau ubah budget apa jadi berapa? Misal "ubah budget Makanan jadi 750rb".';
+const BUDGET_DELETE_ASK_REPLY =
+  'Mau hapus budget apa? Sebutin kategorinya ya, misal "hapus budget Makanan".';
+const BUDGET_INVALID_AMOUNT_REPLY =
+  'Hmm, nominalnya belum pas nih. Coba sebutin angkanya lagi ya, misal "500rb".';
+const BUDGET_NOT_FOUND_REPLY =
+  'Nggak ketemu budget untuk kategori itu nih 🙏 Cek dulu daftar budgetnya lewat dashboard ya.';
+// Reachable only when a category has NO category-wide budget but SEVERAL
+// wallet-scoped ones (chat command shapes carry no wallet, so there is no
+// way to pick one from here).
+const BUDGET_AMBIGUOUS_REPLY =
+  'Kategori itu punya beberapa budget per dompet, jadi bingung yang mana maksudmu 🙏';
+const BUDGET_DELETE_REASK_REPLY =
+  'Masih mau hapus budgetnya? Balas "ya" buat hapus atau "batal" buat batalin.';
+const BUDGET_DELETE_CANCEL_REPLY = 'Oke, nggak jadi dihapus 👍';
+
 /**
  * Cheap, deterministic check for "does this message plausibly describe a
  * transaction" - a number/amount-unit, or a common transaction verb.
@@ -396,6 +445,23 @@ function isWalletManageRequest(lower) {
 }
 
 /**
+ * Sprint D3: is this message about managing a BUDGET (create / update the
+ * monthly amount / delete), as opposed to a transaction that merely
+ * contains the word "budget"? Same discipline as D1/D2: goal language
+ * keeps its own routing (isExcludedFromSprintC), the budget word is
+ * REQUIRED, and at least one dedicated verb must be present.
+ */
+function isBudgetManageRequest(lower) {
+  if (isExcludedFromSprintC(lower)) return false;
+  if (!BUDGET_WORD_PATTERN.test(lower)) return false;
+  return (
+    BUDGET_CREATE_VERBS.some((verb) => containsWord(lower, verb)) ||
+    BUDGET_UPDATE_VERBS.some((verb) => containsWord(lower, verb)) ||
+    BUDGET_DELETE_VERBS.some((verb) => containsWord(lower, verb))
+  );
+}
+
+/**
  * Cheap, deterministic intent pre-filter. Runs BEFORE any Gemini call so
  * that obviously-non-transaction messages (recap requests, greetings,
  * help questions, small talk) don't waste an extraction call - and,
@@ -410,6 +476,11 @@ function isWalletManageRequest(lower) {
  * same discipline with the words "dompet"/"wallet" - and behind
  * category_manage on purpose, so "tambah kategori Dompet Baru" (a
  * CATEGORY whose name mentions a wallet) stays a category command. Then
+ * Sprint D3's budget_manage (the word "budget" + a dedicated verb),
+ * behind both for the same reason - "tambah kategori Budget Baru"
+ * creates a CATEGORY named after budgets, and "tambah dompet Budget"
+ * creates a WALLET - and ahead of Sprint C so "hapus budget ..." /
+ * "ubah budget ..." are never swallowed by the transaction rules. Then
  * Sprint C intents
  * (undo/delete/edit/search) - they are explicit action verbs that must
  * win over the older keyword blocks ("cari pengeluaran 20rb" would
@@ -423,6 +494,7 @@ export function detectIntent(rawText) {
 
   if (isCategoryManageRequest(lower)) return 'category_manage';
   if (isWalletManageRequest(lower)) return 'wallet_manage';
+  if (isBudgetManageRequest(lower)) return 'budget_manage';
   if (isUndoRequest(lower)) return 'transaction_undo';
   if (isDeleteRequest(lower)) return 'transaction_delete';
   if (isEditRequest(lower)) return 'transaction_edit';
@@ -785,6 +857,79 @@ export function parseWalletManageMessage(rawText) {
 
   if (WALLET_CREATE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
     return tail ? { action: 'create', name: tail } : { action: 'create', incomplete: true };
+  }
+
+  return { action: null };
+}
+
+/**
+ * Splits "Makanan 500rb" into { name: 'Makanan', amountText: '500rb' },
+ * or null when the text does not END with a bare amount token (a
+ * digit-led number plus an optional unit). The amount stays TEXT here so
+ * the handler can run it through the same parseAmount the goal/edit
+ * flows use - only the token split is this function's job.
+ */
+const BUDGET_AMOUNT_TOKEN = /^(\d[\d.,]*)\s*(?:rb|ribu|k|jt|juta)?$/i;
+
+function splitTrailingBudgetAmount(text) {
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  const amountText = tokens[tokens.length - 1];
+  if (!BUDGET_AMOUNT_TOKEN.test(amountText)) return null;
+  return { name: tokens.slice(0, -1).join(' ').trim(), amountText };
+}
+
+/**
+ * Sprint D3: parses a budget_manage message into one of:
+ *   { action: 'create'|'update', name, amountText }  - complete
+ *   { action: 'delete', name }                       - complete
+ *   { action: ..., incomplete: true } - the category or the amount is
+ *     missing - caller asks instead of guessing.
+ *   { action: null } - not a budget command (detection was wrong, or the
+ *     classifier routed a vague message here).
+ * Same shape and rules as parseCategoryManageMessage/parseWalletManage
+ * Message: matching runs on the RAW text so the category keeps the
+ * user's original casing; only the verb checks are case-insensitive.
+ * Documented command shapes: "<verb> budget <kategori> <amount>" /
+ * "ubah budget <kategori> jadi <amount>" / "hapus budget <kategori>".
+ */
+export function parseBudgetManageMessage(rawText) {
+  const raw = String(rawText ?? '').trim();
+  const marker = BUDGET_WORD_PATTERN.exec(raw);
+  if (!marker) return { action: null };
+
+  const prefix = raw.slice(0, marker.index);
+  const prefixLower = prefix.toLowerCase();
+  const tail = raw
+    .slice(marker.index + marker[0].length)
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .replace(/[.!?]+$/u, '')
+    .trim();
+
+  if (BUDGET_DELETE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    return tail ? { action: 'delete', name: tail } : { action: 'delete', incomplete: true };
+  }
+
+  if (BUDGET_UPDATE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    // "jadi <amount>" wins; without it the trailing-amount form
+    // ("ubah budget Makanan 750rb") is accepted too.
+    const split = tail.split(/\b(jadi|menjadi)\b/i);
+    if (split.length >= 3) {
+      const name = split[0].trim();
+      const amountText = split.slice(2).join(' ').trim();
+      if (!name || !amountText) return { action: 'update', incomplete: true };
+      return { action: 'update', name, amountText };
+    }
+    const trailing = splitTrailingBudgetAmount(tail);
+    if (trailing) return { action: 'update', ...trailing };
+    return { action: 'update', incomplete: true };
+  }
+
+  if (BUDGET_CREATE_VERBS.some((verb) => containsWord(prefixLower, verb))) {
+    if (!tail) return { action: 'create', incomplete: true };
+    const trailing = splitTrailingBudgetAmount(tail);
+    if (!trailing) return { action: 'create', incomplete: true };
+    return { action: 'create', ...trailing };
   }
 
   return { action: null };
@@ -1674,13 +1819,18 @@ async function runCategoryRename(user, parsed, trace) {
       from: result.from,
       to: result.to,
       transactionsUpdated: result.transactionsUpdated,
+      budgetsUpdated: result.budgetsUpdated,
     };
     const cascadeNote =
       result.transactionsUpdated > 0
         ? `\n${result.transactionsUpdated} transaksi aktif ikut keganti otomatis.`
         : '';
+    // Budget cascade (D3): budgets follow their category exactly like the
+    // active transactions do - same wording shape as the note above.
+    const budgetNote =
+      result.budgetsUpdated > 0 ? `\n${result.budgetsUpdated} budget ikut keganti otomatis.` : '';
     return {
-      reply: `Oke, kategori "${result.from}" udah ganti jadi "${result.to}" ✅${cascadeNote}`,
+      reply: `Oke, kategori "${result.from}" udah ganti jadi "${result.to}" ✅${cascadeNote}${budgetNote}`,
       newState: STATES.IDLE,
       newStateContext: {},
     };
@@ -1739,6 +1889,17 @@ async function runCategoryDelete(user, parsed, trace) {
       newStateContext: {},
     };
   }
+  // Budget guard (D3): a budget pins its category exactly like an active
+  // transaction does - same 'in_use' status, same reject-early shape.
+  if (usage.budgetCount > 0) {
+    return {
+      reply:
+        `"${resolution.row.name}" masih dipakai ${usage.budgetCount} budget, ` +
+        'jadi nggak bisa dihapus 🙏 Hapus dulu budgetnya ya.',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
 
   return {
     reply:
@@ -1788,9 +1949,15 @@ async function handleAwaitingCategoryConfirm(user, rawText, trace) {
       };
     }
     if (result.status === 'in_use') {
+      // Either blocker counts (D3 added budgets as a second one): name
+      // every reason the delete was cancelled instead of implying that
+      // transactions are the only possible blocker.
+      const blockers = [];
+      if (result.activeCount > 0) blockers.push(`${result.activeCount} transaksi aktif`);
+      if (result.budgetCount > 0) blockers.push(`${result.budgetCount} budget`);
       return {
         reply:
-          `Eh, ternyata "${result.name}" udah dipakai ${result.activeCount} transaksi aktif — ` +
+          `Eh, ternyata "${result.name}" udah dipakai ${blockers.join(' dan ')} — ` +
           'jadinya nggak jadi kuhapus 🙏',
         newState: STATES.IDLE,
         newStateContext: {},
@@ -2114,6 +2281,227 @@ async function handleAwaitingWalletConfirm(user, rawText, trace) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Sprint D3 (Budget Management) handlers - same (user, rawText, trace)
+// signature and the same rules as the blocks above: static replies (no
+// persona call), create/update execute immediately, and delete is the
+// only flow that gets a confirmation state (AWAITING_BUDGET_CONFIRM).
+// EVERY operation goes through domain/budgets.js: amount validation, the
+// active-category membership rule, the duplicate rules and ownership
+// scoping all live there (Batch 1) - this block only parses the message,
+// maps statuses to replies, and stores state. No raw supabase call here,
+// exactly like the D1/D2 blocks.
+//
+// SCOPE (approved Batch 3 decision): chat manages CATEGORY-WIDE budgets
+// (wallet_id NULL) - the only rows chat can create, because the
+// documented command shapes carry no wallet. Resolution prefers the
+// category-wide row, then falls back to a single exact category match at
+// any scope; when several rows share the category and none is
+// category-wide there is no way to pick one from chat, so the flow says
+// so instead of guessing. Wallet-scoped budgets stay API-managed.
+// ---------------------------------------------------------------------------
+
+/**
+ * EXACT (case-insensitive) resolution of a manage-command target against
+ * the caller's OWN budgets, by category name. Deliberately NOT the fuzzy
+ * matchCategoryName: a destructive action must never fire on a prefix
+ * collision ("Makanan" vs "Makanan Berat"), and inference fallbacks
+ * belong to transaction recording, not to management commands - the same
+ * stance as resolveCategoryForManage / resolveWalletForManage.
+ * Returns { kind: 'budget', row } | { kind: 'ambiguous' } |
+ * { kind: 'not_found', name } | { kind: 'empty' }.
+ */
+async function resolveBudgetForManage(userId, rawName) {
+  const name = categoriesDomain.normalizeCategoryName(rawName);
+  if (!name) return { kind: 'empty' };
+  const budgets = await budgetsDomain.listBudgets(userId);
+  const lower = name.toLowerCase();
+  const exact = budgets.filter((row) => String(row.category).toLowerCase() === lower);
+
+  const categoryWide = exact.filter((row) => (row.wallet_id ?? null) === null);
+  if (categoryWide.length > 0) return { kind: 'budget', row: categoryWide[0] };
+  if (exact.length === 1) return { kind: 'budget', row: exact[0] };
+  if (exact.length > 1) return { kind: 'ambiguous' };
+  return { kind: 'not_found', name };
+}
+
+async function runBudgetCreate(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name || !parsed.amountText) {
+    return { reply: BUDGET_CREATE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const amount = parseAmount(parsed.amountText);
+  trace.parsedAmount = amount;
+  if (amount === null) {
+    return { reply: BUDGET_INVALID_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // No walletId on purpose: a chat-created budget is always
+  // category-wide (see the scope note above).
+  const result = await budgetsDomain.createBudget(user.id, {
+    category: parsed.name,
+    amount,
+  });
+  trace.budgetOutcome = result.status;
+
+  if (result.status === 'created') {
+    trace.dbAction = { type: 'insert_budget', budget: result.budget };
+    return {
+      reply:
+        `Oke, budget "${result.budget.category}" ${formatRupiah(result.budget.amount)} per bulan ` +
+        'udah kubikin 👍',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (result.status === 'invalid_name') {
+    return { reply: CATEGORY_INVALID_NAME_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'invalid_amount') {
+    return { reply: BUDGET_INVALID_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (result.status === 'category_not_found') {
+    // Same stance as createBudget: the target must already exist in the
+    // caller's active list - a budget never fabricates a category.
+    return { reply: CATEGORY_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  // wallet_not_found / wallet_archived are unreachable here (chat never
+  // passes a wallet), so the only status left is duplicate - including a
+  // unique-index race caught at insert time.
+  return {
+    reply: `Udah ada budget buat "${parsed.name}" nih. Ubah nominalnya aja ya.`,
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+async function runBudgetUpdate(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name || !parsed.amountText) {
+    return { reply: BUDGET_UPDATE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const amount = parseAmount(parsed.amountText);
+  trace.parsedAmount = amount;
+  if (amount === null) {
+    return { reply: BUDGET_INVALID_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const resolution = await resolveBudgetForManage(user.id, parsed.name);
+  trace.budgetResolution = resolution.kind;
+  if (resolution.kind === 'empty') {
+    return { reply: BUDGET_UPDATE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind === 'ambiguous') {
+    return { reply: BUDGET_AMBIGUOUS_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind !== 'budget') {
+    return { reply: BUDGET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const result = await budgetsDomain.updateBudgetAmount(user.id, resolution.row.id, amount);
+  trace.budgetOutcome = result.status;
+
+  if (result.status === 'updated') {
+    trace.dbAction = { type: 'update_budget', budget: result.budget };
+    return {
+      reply:
+        `Oke, budget "${result.budget.category}" jadi ` +
+        `${formatRupiah(result.budget.amount)} per bulan ✅`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (result.status === 'invalid_amount') {
+    return { reply: BUDGET_INVALID_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  // not_found: the row vanished between resolution and update (race).
+  return { reply: BUDGET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+async function runBudgetDelete(user, parsed, trace) {
+  if (parsed.incomplete || !parsed.name) {
+    return { reply: BUDGET_DELETE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const resolution = await resolveBudgetForManage(user.id, parsed.name);
+  trace.budgetResolution = resolution.kind;
+  if (resolution.kind === 'empty') {
+    return { reply: BUDGET_DELETE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind === 'ambiguous') {
+    return { reply: BUDGET_AMBIGUOUS_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  if (resolution.kind !== 'budget') {
+    return { reply: BUDGET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  return {
+    reply:
+      `Hapus budget "${resolution.row.category}" (${formatRupiah(resolution.row.amount)} per bulan)?\n\n` +
+      'Balas "ya" buat hapus, atau "batal" buat batalin.',
+    newState: STATES.AWAITING_BUDGET_CONFIRM,
+    newStateContext: {
+      pendingBudgetId: resolution.row.id,
+      budgetCategory: resolution.row.category,
+    },
+  };
+}
+
+async function handleBudgetManageIntent(user, rawText, trace) {
+  const parsed = parseBudgetManageMessage(rawText);
+  trace.budgetParsed = parsed;
+
+  if (parsed.action === 'create') return runBudgetCreate(user, parsed, trace);
+  if (parsed.action === 'update') return runBudgetUpdate(user, parsed, trace);
+  if (parsed.action === 'delete') return runBudgetDelete(user, parsed, trace);
+  return { reply: BUDGET_USAGE_HELP_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+/**
+ * Commit phase of the budget delete flow. deleteBudget re-checks
+ * ownership (user_id scope) on this call - that IS the commit-time guard:
+ * a budget that vanished while the confirmation was open, or an id this
+ * user does not own (tampered state_context), answers not_found and the
+ * real row stays intact. "batal"/"tidak" cancels without touching
+ * anything.
+ */
+async function handleAwaitingBudgetConfirm(user, rawText, trace) {
+  const ctx = user.state_context || {};
+  const confirmation = parseConfirmationReply(rawText);
+
+  if (confirmation === 'yes') {
+    const result = await budgetsDomain.deleteBudget(user.id, ctx.pendingBudgetId);
+    trace.budgetOutcome = result.status;
+
+    if (result.status === 'deleted') {
+      trace.dbAction = { type: 'delete_budget', budget: result.budget };
+      return {
+        reply: `Oke, budget "${result.budget.category}" udah kuhapus 👍`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    // not_found: vanished while the confirmation was open, or an id
+    // outside this user's ownership (they must never be able to delete it).
+    return { reply: BUDGET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  if (confirmation === 'no') {
+    return { reply: BUDGET_DELETE_CANCEL_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  // Hand-back rule, same as the other confirm phases (Sprint C/D1/D2): any
+  // other recognized intent drops the pending confirmation and re-routes,
+  // so this state can never trap the conversation; only 'unclear' re-asks.
+  if (detectIntent(rawText) !== 'unclear') return handleIdle(user, rawText, trace);
+
+  return {
+    reply: BUDGET_DELETE_REASK_REPLY,
+    newState: STATES.AWAITING_BUDGET_CONFIRM,
+    newStateContext: ctx,
+  };
+}
+
 // Dispatch table: to add a new intent later, write one handler above with
 // the (user, rawText, trace) signature and add one line here - handleIdle
 // itself never needs to change. Exported so tests can assert it stays in
@@ -2133,6 +2521,7 @@ export const INTENT_HANDLERS = {
   transaction_undo: handleTransactionUndo,
   category_manage: handleCategoryManageIntent,
   wallet_manage: handleWalletManageIntent,
+  budget_manage: handleBudgetManageIntent,
   unclear: handleUnclearIntent,
 };
 
@@ -2388,6 +2777,9 @@ export async function handleIncomingMessage(phoneNumber, rawText, waMessageId = 
         break;
       case STATES.AWAITING_WALLET_CONFIRM:
         result = await handleAwaitingWalletConfirm(user, rawText, trace);
+        break;
+      case STATES.AWAITING_BUDGET_CONFIRM:
+        result = await handleAwaitingBudgetConfirm(user, rawText, trace);
         break;
       case STATES.IDLE:
       default:

@@ -163,8 +163,8 @@ describe('parseWalletManageMessage (pure parser)', () => {
 });
 
 describe('classifier enum <-> handler map sync (D2 mandate)', () => {
-  test('enum is 15 and both sides match exactly', () => {
-    assert.equal(INTENT_CATEGORIES.length, 15);
+  test('enum is 16 (D3 added budget_manage) and both sides match exactly', () => {
+    assert.equal(INTENT_CATEGORIES.length, 16);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 
@@ -191,7 +191,7 @@ describe('classifier enum <-> handler map sync (D2 mandate)', () => {
   });
 });
 
-describe('Sprint D2 state machine (7 -> 8)', () => {
+describe('Sprint D2 state machine (7 -> 8, D3 -> 9)', () => {
   test('AWAITING_WALLET_CONFIRM exists; every earlier state intact and ordered', () => {
     assert.equal(STATES.AWAITING_WALLET_CONFIRM, 'AWAITING_WALLET_CONFIRM');
     assert.deepEqual(Object.keys(STATES), [
@@ -203,6 +203,7 @@ describe('Sprint D2 state machine (7 -> 8)', () => {
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
       'AWAITING_WALLET_CONFIRM',
+      'AWAITING_BUDGET_CONFIRM',
     ]);
   });
 });

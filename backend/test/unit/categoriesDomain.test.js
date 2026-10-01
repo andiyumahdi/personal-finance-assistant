@@ -42,6 +42,18 @@ function makeTx(id, userId, overrides = {}) {
   };
 }
 
+function makeBudget(id, userId, category, overrides = {}) {
+  return {
+    id,
+    user_id: userId,
+    category,
+    amount: 100000,
+    wallet_id: null,
+    created_at: '2026-10-01T08:00:00.000Z',
+    ...overrides,
+  };
+}
+
 let fake;
 
 beforeEach(() => {
@@ -68,6 +80,8 @@ beforeEach(() => {
       // same custom name on B - must never leak across users
       makeTx('tx-b-active', USER_B, { category: 'Kopi Langganan' }),
     ],
+    // D3: the category <-> budget cascade/guard reads this table.
+    budgets: [],
   });
   setSupabaseClientForTests(fake);
 });
@@ -255,6 +269,24 @@ describe('renameCategory (cascade to ACTIVE rows only)', () => {
     assert.equal(result.status, 'invalid_name');
     assert.equal(fake.calls.length, 0);
   });
+
+  test('D3: the rename cascades to the caller budgets only (never to B)', async () => {
+    fake.tables.budgets.push(makeBudget('b-a-kopi', USER_A, 'Kopi Langganan'));
+    fake.tables.budgets.push(makeBudget('b-a-kopi-bri', USER_A, 'Kopi Langganan', {
+      wallet_id: 'w-bri',
+    }));
+    fake.tables.budgets.push(makeBudget('b-b-kopi', USER_B, 'Kopi Langganan'));
+
+    const result = await categoriesDomain.renameCategory(USER_A, 'cat-a-kopi', 'Kopi Pagi D3');
+
+    assert.equal(result.status, 'renamed');
+    assert.equal(result.budgetsUpdated, 2, 'both of A scopes follow the rename');
+    assert.equal(fake.tables.budgets.find((b) => b.id === 'b-a-kopi').category, 'Kopi Pagi D3');
+    assert.equal(fake.tables.budgets.find((b) => b.id === 'b-a-kopi-bri').category, 'Kopi Pagi D3');
+    assert.equal(fake.tables.budgets.find((b) => b.id === 'b-b-kopi').category, 'Kopi Langganan');
+    // history keeps its label; the cascade never rewrites transactions
+    assert.equal(txRow('tx-a-deleted-kopi').category, 'Kopi Langganan');
+  });
 });
 
 describe('getCategoryUsage', () => {
@@ -268,6 +300,18 @@ describe('getCategoryUsage', () => {
   test("another user's category id -> not_found", async () => {
     const usage = await categoriesDomain.getCategoryUsage(USER_A, 'cat-b-kopi');
     assert.equal(usage.status, 'not_found');
+  });
+
+  test('D3: reports budgetCount alongside activeCount, scoped per user', async () => {
+    fake.tables.budgets.push(makeBudget('b-a-kopi', USER_A, 'Kopi Langganan'));
+    fake.tables.budgets.push(makeBudget('b-b-kopi', USER_B, 'Kopi Langganan'));
+
+    const usage = await categoriesDomain.getCategoryUsage(USER_A, 'cat-a-kopi');
+    assert.equal(usage.activeCount, 2, 'soft-deleted history still does not count');
+    assert.equal(usage.budgetCount, 1, "A's own budget only");
+
+    const noBudget = await categoriesDomain.getCategoryUsage(USER_A, 'cat-a-habis');
+    assert.equal(noBudget.budgetCount, 0);
   });
 });
 
@@ -327,6 +371,36 @@ describe('deleteCategory (never touches transactions)', () => {
     await categoriesDomain.deleteCategory(USER_A, 'cat-a-susu');
     const lainnyaAfter = fake.tables.transactions.filter((tx) => tx.category === 'Lainnya').length;
     assert.equal(lainnyaAfter, lainnyaBefore);
+  });
+
+  test('D3: a BUDGET blocks the delete (in_use + budgetCount, zero writes)', async () => {
+    fake.resetCalls();
+    // 'Kopi Bekas' has only soft-deleted history -> was deletable pre-D3.
+    fake.tables.budgets.push(makeBudget('b-a-habis', USER_A, 'Kopi Bekas'));
+
+    const result = await categoriesDomain.deleteCategory(USER_A, 'cat-a-habis');
+
+    assert.equal(result.status, 'in_use', 'the D1 status, no invented one');
+    assert.equal(result.name, 'Kopi Bekas');
+    assert.equal(result.activeCount, 0, 'transactions are not the blocker here');
+    assert.equal(result.budgetCount, 1);
+    assert.ok(categoryRow('cat-a-habis'), 'row survives the guard');
+    assert.equal(transactionWrites().length, 0, 'delete never writes transactions');
+    assert.equal(
+      fake.calls.filter((c) => c.table === 'budgets' && c.op !== 'select').length,
+      0,
+      'the guard never writes budgets',
+    );
+    // the budget itself is untouched too
+    assert.equal(fake.tables.budgets.find((b) => b.id === 'b-a-habis').category, 'Kopi Bekas');
+  });
+
+  test('D3: another user budgeting the same name never blocks this user', async () => {
+    fake.tables.budgets.push(makeBudget('b-b-habis', USER_B, 'Kopi Bekas'));
+
+    const result = await categoriesDomain.deleteCategory(USER_A, 'cat-a-habis');
+    assert.equal(result.status, 'deleted', 'B budget is irrelevant to A');
+    assert.equal(fake.tables.budgets.find((b) => b.id === 'b-b-habis').category, 'Kopi Bekas');
   });
 });
 

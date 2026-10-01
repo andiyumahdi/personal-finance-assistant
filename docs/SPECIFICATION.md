@@ -193,9 +193,17 @@ wallets
 ├── is_default         boolean DEFAULT false   -- exactly ONE per user (partial unique index); renameable, never archivable/deletable
 ├── archived_at        timestamptz NULL  -- NULL = active; set = archived (reversible: hidden from NEW recordings only, history/balance intact)
 ├── created_at         timestamptz DEFAULT now()
+
+budgets
+├── id                 uuid PK
+├── user_id            uuid FK -> users.id
+├── category           text NOT NULL    -- category NAME from the active list, see 7.2 (2-40 chars; no FK - same stance as transactions.category, Sprint D3)
+├── wallet_id          uuid FK -> wallets.id NULL  -- NULL = category-wide (every wallet); uuid = that wallet's slice only; ON DELETE CASCADE (Sprint D3)
+├── amount             numeric NOT NULL CHECK (amount > 0)   -- standing monthly target; progress computed at READ (current WIB month), no spent column
+├── created_at         timestamptz DEFAULT now()
 ```
 
-**Indices:** `transactions(user_id, created_at)`, `transactions(user_id, deleted_at)`, `transactions(user_id, wallet_id)` (Sprint D2 - balance aggregation + delete reference guard), `message_log(wa_message_id)`, `UNIQUE user_categories(user_id, lower(name))` (Sprint D1 - per-user, case-insensitive name uniqueness), `UNIQUE wallets(user_id, lower(name))` (Sprint D2), partial `UNIQUE wallets(user_id) WHERE is_default` (Sprint D2 - the single-default invariant).
+**Indices:** `transactions(user_id, created_at)`, `transactions(user_id, deleted_at)`, `transactions(user_id, wallet_id)` (Sprint D2 - balance aggregation + delete reference guard), `message_log(wa_message_id)`, `UNIQUE user_categories(user_id, lower(name))` (Sprint D1 - per-user, case-insensitive name uniqueness), `UNIQUE wallets(user_id, lower(name))` (Sprint D2), partial `UNIQUE wallets(user_id) WHERE is_default` (Sprint D2 - the single-default invariant), partial `UNIQUE budgets(user_id, lower(category)) WHERE wallet_id IS NULL` + partial `UNIQUE budgets(user_id, wallet_id, lower(category)) WHERE wallet_id IS NOT NULL` (Sprint D3 - one category-wide and one wallet-scoped budget per user, case-insensitive).
 
 **Notes:**
 - No hard deletes anywhere in the transaction table — `deleted_at` only.
@@ -203,6 +211,7 @@ wallets
 - `pending_context` is a single row per user (upsert pattern), not a growing log — it only ever tracks the *current* open context window.
 - Category Management (Sprint D1, migration `20260930173900_add_user_categories.sql`): the ten defaults live in code, not as rows — only custom categories are rows, strictly per-user. `transactions.category` holds the NAME (no FK), so: deleting a category NEVER touches transactions (soft-deleted history keeps its old label), and renaming cascades only to that user's ACTIVE transactions (`deleted_at IS NULL`). RLS on `user_categories` is enabled with zero policies (same reason as every other table: service-role-only access, see `supabase/README.md`).
 - Wallet / Source Account (Sprint D2, migration `20261001090000_add_wallets.sql`): `wallets` are rows (unlike categories, a transaction references the default wallet BY ID), hence the partial unique index for exactly-one-default and the FK backstop on `transactions.wallet_id`. `wallet_id` is intentionally NULLABLE (decision C): every write resolves a wallet app-side (`domain/wallets.js` `resolveWallet` — resolve-only, silent fallback to the default, default created on demand; NEVER auto-created from message text) and the migration backfills all pre-existing rows to their default, so `NULL` always reads as the default wallet. Lifecycle is application-enforced, no triggers: default renameable but never archivable/deletable; archive (`archived_at`) is reversible and only hides the wallet from NEW recordings; hard DELETE requires ZERO total references (soft-deleted history counts — application count first, FK as backstop). Balance is computed at READ (income − expense over active transactions) — deliberately no balance column (decision E). RLS on `wallets`: enabled, zero policies (same service-role-only model as every other table).
+- Budget (Sprint D3, migration `20261001110000_add_budgets.sql`): a STANDING MONTHLY target — one row per (user, category[, wallet]) with NO period column and NO `spent` column: progress is computed at READ against the current WIB calendar month (`monthRange()`), so there is nothing to keep in sync (decision-E stance). `category` is a NAME (no FK), exactly like `transactions.category`, which is what lets the D1 category flows extend to budgets by name: rename cascades into that user's budgets (`renameBudgetsCategoryForUser`), delete is blocked while a budget references the name (`countBudgetsForCategory`) — both primitives fail OPEN pre-migration (missing table → 0 rows via `isMissingBudgetsTable`), so category management behaves exactly as in D1/D2 until the push, while every budget read path stays fail-closed. `wallet_id` is nullable (`NULL` = category-wide) with `ON DELETE CASCADE`, so hard-deleting a wallet removes only its own budgets and never blocks the D2 guard (transaction references only). RLS on `budgets`: enabled, zero policies (same service-role-only model as every other table).
 
 ---
 
@@ -240,8 +249,8 @@ Two consumers: the Baileys backend (writes) and the Next.js dashboard (reads/edi
 |---|---|---|
 | GET | `/api/categories` | Active category list: the ten built-in defaults first (locked, `id: null`), then the user's custom rows. Every entry carries `active_transaction_count` — computed as an aggregate over ACTIVE transactions only (`deleted_at IS NULL`), one grouped query total, deliberately not one count query per category (N+1) |
 | POST | `/api/categories` | Create a custom category (`{name}`). Errors: `400 invalid_name` (+ `reason`), `409 duplicate`, `409 duplicate_default`, `409 too_many` (cap 50) |
-| PATCH | `/api/categories/:id` | Rename a custom category (`{name}`) → `{category, transactions_updated}`. Cascade covers ONLY this user's active transactions (`deleted_at IS NULL`); soft-deleted history keeps its label. Same validation/duplicate errors as POST; defaults → `403 default` |
-| DELETE | `/api/categories/:id` | D1 locked semantics: default → `403 default`; still used by active transactions → `409 {error:'in_use', activeCount}`; unknown → `404`; unused → `200 {success:true}`. The delete NEVER writes to transactions |
+| PATCH | `/api/categories/:id` | Rename a custom category (`{name}`) → `{category, transactions_updated, budgets_updated}` (D3: budgets follow the name too). Cascade covers ONLY this user's active transactions (`deleted_at IS NULL`) and that user's budgets; soft-deleted history keeps its label. Same validation/duplicate errors as POST; defaults → `403 default` |
+| DELETE | `/api/categories/:id` | D1 locked semantics, D3-extended: default → `403 default`; still used by active transactions OR by a budget → `409 {error:'in_use', activeCount, budgetCount}`; unknown → `404`; unused → `200 {success:true}`. The delete NEVER writes to transactions or budgets |
 
 Defaults are addressed by NAME in `:id` (they have no row — e.g. `DELETE /api/categories/Transport`); custom categories by uuid. Every query carries `user_id = session.user.id` (NextAuth session) in the WHERE clause itself, same ownership pattern as section 4.4. Validation mirrors `backend/src/domain/categories.js` via the copy in `frontend/lib/categories.ts` (separate deployable services — same pattern as the goals contribute logic).
 
@@ -257,7 +266,21 @@ Two consumers: the Baileys backend (write path, resolves `wallet_id` on every in
 
 Routed through `frontend/app/api/wallets/route.ts` + `[id]/route.ts` with the shared auth/session + `assertUserScope` query layer (`backend/src/db/queries/wallets.js`), fail-closed whenever the `wallets` table does not exist yet (migration not pushed → 500, the Settings group shows a retryable error instead of fabricated data).
 
-### 4.7 Internal (backend-only, not exposed to dashboard)
+### 4.7 Budgets (Sprint D3)
+Two consumers: the Baileys backend (chat channel, intent `budget_manage`) and the dashboard (the read-only **Budgets** card). One row = one STANDING monthly target (section 3); the API never stores progress — `GET` computes it.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/budgets` | The user's budgets with progress for the CURRENT WIB calendar month attached — exactly 2 queries (budget rows + one grouped ACTIVE-expense scan over `[from, to)`), no N+1; soft-deleted history never consumes a budget; a wallet-scoped budget counts only facts with that `wallet_id`. Fail-closed: `500` while migration `20261001110000` is not pushed (callers degrade, never fabricate) |
+| POST | `/api/budgets` | Create — body `{category, amount, walletId?}` (`walletId` omitted/`null` = category-wide) → 201. Check order mirrors `domain/budgets.js`: `400 invalid_name`, `400 invalid_amount` (both with `reason`), `400 category_not_found` (name not in this user's ACTIVE list), `404 wallet_not_found`, `409 wallet_archived`, `409 duplicate` (same scope, case-insensitive — including an insert-time unique-index race) |
+| PATCH | `/api/budgets/:id` | `{amount}` only — retarget; the row's category and wallet scope NEVER change (re-scope = DELETE + POST). `400 invalid_request` (missing field), `400 invalid_amount`, `404 not_found` (unknown/foreign id or malformed uuid) |
+| DELETE | `/api/budgets/:id` | Unconditional once ownership checks out — budgets are referenced by nothing, so confirmation UX belongs to the chat flow (section 12.1), not the API → `{success:true}`; `404 not_found` |
+
+Chat channel (intent `budget_manage`, one of 16 classifier enum values — classifier prompt `v2026-10-01.2`): the verb comes BEFORE the word `budget` — create `<tambah|tambahin|buat|bikin> budget <kategori> <nominal>`, update `<ubah|update|rubah|ganti> budget <kategori> [jadi|menjadi] <nominal>`, delete `<hapus|delete|buang> budget <kategori>`. Scope is category-wide ONLY (wallet-scoped budgets are API-managed — the handler never passes a `walletId`). Create/update resolve the category by EXACT name and execute immediately (no fuzzy `matchCategoryName`): absent → the category-not-found reply, ambiguous (several categories share the name) → refusal with 0 writes; delete opens `AWAITING_BUDGET_CONFIRM` (section 12.1) with ownership + existence re-checked at commit. A message with the budget word but no recognized verb gets static usage help. Category ties (section 7.2): rename cascades budgets; delete is blocked while `countBudgetsForCategory > 0`.
+
+Routed through `frontend/app/api/budgets/route.ts` + `[id]/route.ts` (NextAuth session scoping in application code — same ownership pattern as sections 4.4–4.6); backend twin `backend/src/domain/budgets.js` + `backend/src/db/queries/budgets.js`; shared amount/scope/month rules in `frontend/lib/budgets.ts`.
+
+### 4.8 Internal (backend-only, not exposed to dashboard)
 These live inside the Baileys backend process, not as public HTTP routes:
 - `extractTransaction(rawText, context)` → calls Gemini extraction layer, returns structured JSON
 - `generateReply(templateData, personaContext)` → calls Gemini persona layer, returns natural-language string
@@ -284,6 +307,7 @@ backend/
 │   │   ├── context.js             # pending_context read/write, window logic
 │   │   ├── goals.js
 │   │   ├── categories.js          # custom category create/rename/delete rules (Sprint D1)
+│   │   ├── budgets.js             # standing budget create/update/delete + WIB-month progress (Sprint D3)
 │   │   └── summary.js             # totals/percentage calculations (pure math, no AI)
 │   ├── scheduler/
 │   │   ├── dailyReminder.js
@@ -317,6 +341,8 @@ frontend/
 │   │   ├── auth/[...nextauth]/route.ts
 │   │   ├── categories/route.ts
 │   │   ├── categories/[id]/route.ts
+│   │   ├── budgets/route.ts
+│   │   ├── budgets/[id]/route.ts
 │   │   ├── transactions/route.ts
 │   │   ├── transactions/[id]/route.ts
 │   │   ├── summary/route.ts
@@ -331,6 +357,7 @@ frontend/
 ├── lib/
 │   ├── supabaseClient.ts
 │   ├── categories.ts               # mirrors defaults + category name rules (Sprint D1)
+│   ├── budgets.ts                  # budget amount/scope rules + WIB month window (Sprint D3)
 │   └── auth.ts
 ├── package.json
 └── .env.local
@@ -391,9 +418,9 @@ Built-in defaults (closed set, locked — present for every user, not rows in `u
 On top of those, each user may add custom categories (migration `20260930173900_add_user_categories.sql`):
 - **Name rules:** 2–40 characters after whitespace normalization; first char letter/number, then letters/numbers/spaces plus `& ' ( ) . -`; no emoji, slash, or comma (`backend/src/domain/categories.js`, mirrored for the dashboard API in `frontend/lib/categories.ts`).
 - **Uniqueness & cap:** unique per user, case-insensitive (`UNIQUE (user_id, lower(name))`); a custom name may not collide with a default; max 50 custom categories per user.
-- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (one of 15 classifier enum values since Sprint D2) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
-- **Delete semantics (locked):** defaults are never deletable (API `403 default`); a category still referenced by ACTIVE transactions is rejected with the count (chat reply / API `409 in_use` + `activeCount`), no confirmation opens; otherwise confirmation in chat ("ya" re-counts at commit time) or Settings dialog. A delete NEVER writes to transactions — soft-deleted history keeps its historical label.
-- **Rename cascade:** only that user's ACTIVE transactions (`deleted_at IS NULL`); other users never touched; defaults not renameable.
+- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (one of 16 classifier enum values since Sprint D3) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
+- **Delete semantics (locked):** defaults are never deletable (API `403 default`); a category still referenced by ACTIVE transactions or by a budget (Sprint D3) is rejected with the counts (chat reply names both blockers / API `409 in_use` + `activeCount` + `budgetCount`), no confirmation opens; otherwise confirmation in chat ("ya" re-counts at commit time) or Settings dialog. A delete NEVER writes to transactions or budgets — soft-deleted history keeps its historical label.
+- **Rename cascade:** that user's ACTIVE transactions (`deleted_at IS NULL`) AND their budgets (Sprint D3 — `budgets.category` follows the name); other users never touched; defaults not renameable.
 - **Invariant:** every ACTIVE transaction's category is in the user's active list — application-enforced (the DB CHECK on `transactions.category` was dropped in migration `20260930173900` because custom names can't be pre-enumerated).
 - `Lainnya` remains the extraction fallback guess (section 7.1), never a reassignment target.
 
@@ -627,6 +654,10 @@ States (as implemented):
                                deleting (wallet create/rename/archive/unarchive execute immediately -
                                archive is reversible - so they need no state); on any recognized
                                intent the handler hands back to the router (Sprint C pattern)
+  AWAITING_BUDGET_CONFIRM     — budget delete flow (Sprint D3): explicit "ya"/"batal"; "ya" re-checks OWNERSHIP +
+                                existence at commit time (budget create/update execute immediately, so they need
+                                no state); on any other recognized intent the handler hands back to the router
+                                with the pending delete dropped (Sprint C pattern)
 
   (This supersedes the original draft list, which named
   AWAITING_CORRECTION_TARGET and AWAITING_ONBOARDING_NAME. Neither was
@@ -658,7 +689,7 @@ Two separate mechanisms, both required, solving different problems:
 
 ### 12.3 Prompt Versioning
 
-- Each prompt (extraction, persona) lives in its own file under `src/ai/prompts/` with an explicit version identifier at the top of the file (date-based, e.g. `v2026-07-07`), not just edited in place.
+- Each prompt (extraction, persona, intent classifier) lives in its own file under `src/ai/` with an explicit version identifier at the top of the file (date-based, e.g. `v2026-07-07`), not just edited in place. Version bumps ride together with a golden re-run (Sprint D3: classifier enum 15 → 16 for `budget_manage` → `v2026-10-01.2`, golden 15/15).
 - The version string used for a given call is recorded alongside the result — add `prompt_version` to the `transactions` table (extraction prompt) and include it in structured logs for persona calls.
 - **Why required:** LLM output behavior changes when a prompt changes, sometimes subtly (a rewording that shifts category assignment patterns). Without a version tag on the data itself, a debugging session months later ("why did October's categorization look different from November's?") has no way to correlate a data pattern to a specific prompt change.
 - Old prompt versions are kept in the codebase (git history is enough — no need for a runtime prompt registry at this scale).

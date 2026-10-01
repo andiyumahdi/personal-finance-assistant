@@ -531,6 +531,60 @@ push, every D2 wallet feature fails closed against the live database
 transaction recording itself keeps working — writes carry
 `wallet_id = NULL`, which reads as the default wallet.
 
+**D3 Budget ✅ DONE** (item 3 above; delivered in four reviewed
+batches). Decisions as implemented:
+- **Standing monthly target, no period column:** one row = one standing
+  monthly budget per (user, category[, wallet]) — NO `period` column and
+  NO `spent` column: progress is computed at READ against the current
+  WIB calendar month (`monthRange()`), so there is nothing that can
+  desynchronize (decision-E stance).
+- **Scope:** category is REQUIRED and stored as the NAME exactly like
+  `transactions.category` (no FK — the ten defaults have no row to point
+  at), plus nullable `wallet_id`: `NULL` = category-wide across every
+  wallet, a uuid = that wallet's slice only (the roadmap's "optionally
+  scoped per wallet"). Two partial unique indexes — one category-wide
+  budget per (user, category), one wallet-scoped budget per
+  (user, wallet, category), both case-insensitive on `lower(category)`;
+  `amount > 0` CHECK; `wallet_id ON DELETE CASCADE` so hard-deleting a
+  wallet removes only its own budgets and never trips the D2 delete
+  guard (which counts transaction references only).
+- **Two channels, one feature:** dashboard `GET/POST/PATCH/DELETE
+  /api/budgets` (GET = budget rows + one grouped WIB-month
+  ACTIVE-expense scan = exactly 2 queries, no N+1; mutations mirror
+  `domain/budgets.js` check order and session scoping) + the read-only
+  **Budgets** card on the dashboard (fail-closed — renders nothing until
+  the migration is pushed) and chat commands, intent `budget_manage`
+  (enum 16), classifier prompt bumped `v2026-10-01.1` →
+  `v2026-10-01.2`, golden re-run 15/15 per SPECIFICATION.md section
+  12.3.
+- **Chat scope (deliberate):** category-wide budgets only —
+  `<tambah|tambahin|buat|bikin|ubah|update|rubah|ganti|hapus|delete|buang>
+  budget <kategori> [jadi <nominal>]`, verb before the word `budget`.
+  Create/update resolve the target category by EXACT name and execute
+  immediately; delete asks first (9th state `AWAITING_BUDGET_CONFIRM`,
+  ownership re-checked at commit); a non-unique name refuses
+  (`ambiguous`, 0 writes) instead of guessing; a verb-less "budget"
+  message gets static usage help. No raw queries from the message
+  handler — everything goes through `domain/budgets.js`.
+- **Category cascade:** rename cascades the category NAME into that
+  user's budgets (`renameBudgetsCategoryForUser`) while transaction
+  history keeps its labels; delete is blocked while
+  `countBudgetsForCategory > 0` (same `in_use` guard, `budgetCount` in
+  the payload), re-checked at confirmation and mirrored in
+  `frontend/app/api/categories/[id]/route.ts` (409). Both primitives
+  fail OPEN pre-migration (`isMissingBudgetsTable` → 0 budgets).
+- **Verification:** backend unit 551, integration 23/23 (real DB),
+  golden 15/15, lint clean (backend + frontend), `next build` OK.
+
+Open item — **resolved:** migration `20261001110000_add_budgets.sql`
+was applied to the live database during D3 finalization (together with
+the commit/push of the D3 work; local migration history = remote, 6/6);
+no D3 item remains open. Before the push every D3 budget feature had
+failed closed (`/api/budgets` → 500, empty Budgets card, chat budget
+commands dropped by `whatsapp/webhook.js`'s per-message catch) while
+category management kept working through the missing-table handling
+above (0 budgets counted — D1/D2 behavior unchanged).
+
 ### Sprint E — Intelligence
 
 Goal: increase the AI's value beyond transaction logging. Scope: AI

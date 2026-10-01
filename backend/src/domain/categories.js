@@ -22,6 +22,7 @@
 
 import { CATEGORIES, isDefaultCategory } from '../config/categories.js';
 import * as userCategoryQueries from '../db/queries/userCategories.js';
+import * as budgetQueries from '../db/queries/budgets.js';
 import { renameCategoryForUserTransactions } from '../db/queries/transactions.js';
 
 export const MIN_CATEGORY_NAME_LENGTH = 2;
@@ -149,12 +150,30 @@ export async function renameCategory(userId, categoryId, rawNewName) {
     oldName,
     validated.name,
   );
-  return { status: 'renamed', from: oldName, to: validated.name, transactionsUpdated };
+  // D3 budget cascade: budgets follow their category exactly like the
+  // active transactions do (a budget pins its category name), scoped to
+  // this user only and never touching transactions. Primitives tolerate
+  // the pre-migration budgets table being absent (see db/queries/
+  // budgets.js) - a rename must not regress just because D3 isn't applied.
+  const budgetsUpdated = await budgetQueries.renameBudgetsCategoryForUser(
+    userId,
+    oldName,
+    validated.name,
+  );
+  return {
+    status: 'renamed',
+    from: oldName,
+    to: validated.name,
+    transactionsUpdated,
+    budgetsUpdated,
+  };
 }
 
 /**
- * How many ACTIVE transactions of this user currently use the category.
- * Statuses: 'ok' (name/activeCount attached) | 'not_found'.
+ * How many ACTIVE transactions of this user currently use the category,
+ * and how many of their budgets do (D3 - a budget pins its category the
+ * same way an active transaction does).
+ * Statuses: 'ok' (name/activeCount/budgetCount attached) | 'not_found'.
  * This is the cheap pre-check the chat confirmation and the dashboard's
  * disabled-delete state both show; deleteCategory re-checks internally.
  */
@@ -166,17 +185,20 @@ export async function getCategoryUsage(userId, categoryId) {
     userId,
     row.name,
   );
-  return { status: 'ok', name: row.name, activeCount };
+  const budgetCount = await budgetQueries.countBudgetsForCategory(userId, row.name);
+  return { status: 'ok', name: row.name, activeCount, budgetCount };
 }
 
 /**
- * Deletes a custom category. NEVER writes to transactions.
- * Statuses: 'deleted' (name attached) | 'in_use' (activeCount attached -
- * nothing was touched) | 'not_found' (missing/other user's row, or it
- * vanished between check and delete).
- * The count below IS the commit-time guard: chat/API call this again on
- * the confirmation "yes", so a transaction created between the question
- * and the answer blocks the delete with an accurate count.
+ * Deletes a custom category. NEVER writes to transactions (or budgets).
+ * Statuses: 'deleted' (name attached) | 'in_use' (activeCount and/or
+ * budgetCount attached - nothing was touched) | 'not_found' (missing/
+ * other user's row, or it vanished between check and delete).
+ * The counts below ARE the commit-time guard: chat/API call this again on
+ * the confirmation "yes", so a transaction recorded OR a budget created
+ * between the question and the answer blocks the delete with an accurate
+ * count instead of leaving a budget pointing at a category that no
+ * longer exists in the active list.
  */
 export async function deleteCategory(userId, categoryId) {
   const row = await userCategoryQueries.getUserCategoryById(categoryId, userId);
@@ -186,7 +208,10 @@ export async function deleteCategory(userId, categoryId) {
     userId,
     row.name,
   );
-  if (activeCount > 0) return { status: 'in_use', name: row.name, activeCount };
+  const budgetCount = await budgetQueries.countBudgetsForCategory(userId, row.name);
+  if (activeCount > 0 || budgetCount > 0) {
+    return { status: 'in_use', name: row.name, activeCount, budgetCount };
+  }
 
   const deleted = await userCategoryQueries.deleteUserCategoryById(categoryId, userId);
   if (!deleted) return { status: 'not_found' };

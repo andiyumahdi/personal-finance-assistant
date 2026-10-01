@@ -59,6 +59,11 @@ const TABLE_DEFAULTS = {
     archived_at: null,
     created_at: nowIso(),
   }),
+  budgets: () => ({
+    id: crypto.randomUUID(),
+    wallet_id: null,
+    created_at: nowIso(),
+  }),
   goals: () => ({
     id: crypto.randomUUID(),
     status: 'active',
@@ -90,6 +95,8 @@ function matchesFilter(row, filter) {
       return value !== null && value !== undefined && String(value) >= String(filter.val);
     case 'lte':
       return value !== null && value !== undefined && String(value) <= String(filter.val);
+    case 'lt':
+      return value !== null && value !== undefined && String(value) < String(filter.val);
     case 'ilike': {
       const needle = String(filter.pattern).replaceAll('%', '').toLowerCase();
       return typeof value === 'string' && value.toLowerCase().includes(needle);
@@ -167,6 +174,11 @@ class FakeQuery {
     return this;
   }
 
+  lt(col, val) {
+    this.filters.push({ type: 'lt', col, val });
+    return this;
+  }
+
   ilike(col, pattern) {
     this.filters.push({ type: 'ilike', col, pattern });
     return this;
@@ -234,7 +246,9 @@ class FakeQuery {
     );
     if (failureIndex !== -1) {
       const [failure] = this.db.failures.splice(failureIndex, 1);
-      return { data: null, error: { message: failure.message } };
+      const error = { message: failure.message };
+      if (failure.code) error.code = failure.code;
+      return { data: null, error };
     }
 
     const rows = this._rows();
@@ -332,8 +346,8 @@ export function createFakeSupabase(seedTables = {}) {
       db.calls = [];
     },
     /** Arms a one-shot failure for the next call matching table+op ('*' matches any op). */
-    failNext(table, op = '*', message = 'injected fake failure') {
-      db.failures.push({ table, op, message });
+    failNext(table, op = '*', message = 'injected fake failure', code = null) {
+      db.failures.push({ table, op, message, code });
     },
   };
   return db;

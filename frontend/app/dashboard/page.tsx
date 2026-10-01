@@ -3,11 +3,12 @@
 // Main dashboard - real backend wiring (Supabase via /api/summary),
 // replacing Lovable's mock useDashboardData() hook entirely, same pattern
 // as the Goals page. Layout ported from Lovable's src/routes/dashboard.tsx
-// with two sections dropped (not just hidden): "Net worth" (a wallets
+// with one section dropped (not just hidden): "Net worth" (a wallets
 // concept exists since Sprint D2, but no net-worth aggregate endpoint is
-// wired - still Post-MVP Backlog) and "Budgets" (needs a
-// budgets table that doesn't exist - also Post-MVP Backlog). See
-// docs/SPECIFICATION.md section 2 and docs/ROADMAP.md.
+// wired - still Post-MVP Backlog). "Budgets" was dropped in the same port
+// and RESTORED in Sprint D3 Batch 2 now that the budgets table exists
+// (BudgetsCard, its own fail-closed fetch). See docs/SPECIFICATION.md
+// section 2 and docs/ROADMAP.md.
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -16,6 +17,7 @@ import { AppLayout } from '@/components/layout/app-layout';
 import { KpiCard } from '@/components/dashboard/kpi-card';
 import { CashflowChart } from '@/components/dashboard/cashflow-chart';
 import { NeraInsight } from '@/components/dashboard/nera-insight';
+import { BudgetsCard } from '@/components/dashboard/budgets-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/state/empty-state';
@@ -122,6 +124,8 @@ export default function DashboardPage() {
             hint="of monthly income"
           />
         </section>
+
+        <BudgetsCard />
 
         <Card className="shadow-none">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">

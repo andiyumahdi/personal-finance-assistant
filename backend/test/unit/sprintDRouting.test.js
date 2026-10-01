@@ -80,8 +80,8 @@ describe('collision matrix: category_manage vs the transaction rules', () => {
 });
 
 describe('classifier enum <-> handler map sync (D1 mandate)', () => {
-  test('enum is 15 (D1\'s 14 + D2\'s wallet_manage) and both sides match exactly', () => {
-    assert.equal(INTENT_CATEGORIES.length, 15);
+  test("enum is 16 (14 + D2's wallet_manage + D3's budget_manage) and both sides match exactly", () => {
+    assert.equal(INTENT_CATEGORIES.length, 16);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 
@@ -92,7 +92,7 @@ describe('classifier enum <-> handler map sync (D1 mandate)', () => {
 });
 
 describe('Sprint D state', () => {
-  test('AWAITING_CATEGORY_CONFIRM exists, earlier states intact (D2 appended its own)', () => {
+  test('AWAITING_CATEGORY_CONFIRM exists, earlier states intact (D2/D3 appended their own)', () => {
     assert.equal(STATES.AWAITING_CATEGORY_CONFIRM, 'AWAITING_CATEGORY_CONFIRM');
     assert.deepEqual(Object.keys(STATES), [
       'IDLE',
@@ -103,6 +103,7 @@ describe('Sprint D state', () => {
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
       'AWAITING_WALLET_CONFIRM',
+      'AWAITING_BUDGET_CONFIRM',
     ]);
   });
 });
