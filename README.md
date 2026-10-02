@@ -82,9 +82,12 @@ for WhatsApp Cloud API account setup.
 **Phases A-E implemented** (database, domain layer, AI layer, message
 pipeline, WhatsApp Cloud API webhook) - see
 [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full phase breakdown and
-current exit-criteria status. Post-MVP improvements (account/wallet
-management, dashboard polish, etc.) are intentionally deferred - see the
-Post-MVP Backlog section at the end of `docs/ROADMAP.md`.
+current exit-criteria status. On the Locked Roadmap there, Sprints A-D
+are implemented - foundation, conversation UX, transaction management,
+and financial organization (categories, source accounts/wallets,
+budgets, transfers between wallets); Sprint E (Intelligence) is next.
+The former Post-MVP Backlog - which listed account/wallet management as
+deferred - was superseded and absorbed into that Locked Roadmap.
 
 ## License
 

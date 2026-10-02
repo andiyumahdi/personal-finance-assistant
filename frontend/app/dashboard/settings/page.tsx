@@ -91,6 +91,7 @@ function describeCategoryError(body: {
   error?: unknown;
   reason?: string;
   activeCount?: number;
+  budgetCount?: number;
 }): string {
   switch (body.error) {
     case 'invalid_name':
@@ -108,8 +109,24 @@ function describeCategoryError(body: {
       return 'You already have the maximum of 50 custom categories.';
     case 'default':
       return 'Built-in categories are locked.';
-    case 'in_use':
-      return `Still used by ${body.activeCount ?? 'some'} active transactions - remove those first.`;
+    case 'in_use': {
+      // The DELETE 409 reports BOTH blockers (Sprint D3): activeCount
+      // AND/OR budgetCount. Name the ones that actually apply - the old
+      // copy only ever blamed transactions, which read as nonsense
+      // ("used by 0 active transactions") when only a budget blocked it.
+      const active = body.activeCount ?? 0;
+      const budgets = body.budgetCount ?? 0;
+      if (active > 0 && budgets > 0) {
+        return `Still used by ${active} active transaction${active === 1 ? '' : 's'} and ${budgets} budget${budgets === 1 ? '' : 's'} - remove those first.`;
+      }
+      if (budgets > 0) {
+        return `Still used by ${budgets} budget${budgets === 1 ? '' : 's'} - remove those first.`;
+      }
+      if (active > 0) {
+        return `Still used by ${active} active transaction${active === 1 ? '' : 's'} - remove those first.`;
+      }
+      return 'Still in use - remove it from its transactions and budgets first.';
+    }
     case 'not_found':
       return 'That category no longer exists.';
     default:

@@ -292,8 +292,14 @@ semantic classifier fallback, `src/whatsapp/messageHandler.js` +
 - Edge cases that cause total failure (not just a suboptimal reply)
 
 **Explicitly deferred until after v1.0 is running with real users:**
-- Adding new intents beyond the current set (`recap`, `goal_start`, `help`,
-  `greeting`, `small_talk`, `transaction`, `unclear`)
+- Adding new intents beyond the current set (`greeting`, `dashboard_link`,
+  `help`, `product_question`, `recap`, `goal_start`, `transaction`,
+  `transaction_search`, `transaction_edit`, `transaction_delete`,
+  `transaction_undo`, `category_manage`, `wallet_manage`, `budget_manage`,
+  `transfer`, `small_talk`, `unclear` — the 17 values of
+  `INTENT_CATEGORIES` as of Sprint D4; this list originally stopped at the
+  pre-Sprint-C set, so it is synced here as a factual update only — the
+  deferral itself is unchanged)
 - Broadening conversational coverage / making the bot "chat better" in general
 - Any change whose only goal is handling more phrasing variety, not fixing
   something broken
@@ -521,15 +527,15 @@ reviewed batches). Decisions as implemented:
 - **Verification:** backend unit 435, integration 23/23 (real DB),
   golden 15/15, lint clean (backend + frontend), `next build` OK.
 
-Open item: migration `20261001090000_add_wallets.sql` exists **locally
-only — not yet committed and not applied to the live database**.
-Committing it and applying it (`supabase db push`) are separate,
-explicitly-approved steps (SPECIFICATION.md section 12.4). Until the
-push, every D2 wallet feature fails closed against the live database
-(`/api/wallets` → 500 with a retryable Settings error, the transactions
-`Wallet` column shows `-`, chat wallet commands reply with an error);
-transaction recording itself keeps working — writes carry
-`wallet_id = NULL`, which reads as the default wallet.
+Open item — **resolved:** migration `20261001090000_add_wallets.sql`
+was applied to the live database during D2 finalization (together with
+the commit/push of the D2 work; local migration history = remote, 7/7
+after D4); no D2 item remains open. Before the push every D2 wallet
+feature failed closed against the live database (`/api/wallets` → 500
+with a retryable Settings error, the transactions `Wallet` column showed
+`-`, chat wallet commands replied with an error); transaction recording
+itself kept working — writes carried `wallet_id = NULL`, which reads as
+the default wallet.
 
 **D3 Budget ✅ DONE** (item 3 above; delivered in four reviewed
 batches). Decisions as implemented:
