@@ -343,6 +343,7 @@ backend/
 │   │   ├── categories.js          # custom category create/rename/delete rules (Sprint D1)
 │   │   ├── transfers.js           # transfer endpoint checks + ONE-row insert (Sprint D4)
 │   │   ├── budgets.js             # standing budget create/update/delete + WIB-month progress (Sprint D3)
+│   │   ├── insights.js            # on-demand insight facts: month analysis, goal prediction, recommendation (Sprint E, pure math)
 │   │   └── summary.js             # totals/percentage calculations (pure math, no AI)
 │   ├── scheduler/
 │   │   ├── dailyReminder.js

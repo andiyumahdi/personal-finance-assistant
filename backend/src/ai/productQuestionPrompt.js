@@ -12,7 +12,7 @@
 // (forbidden phrases, no inventing features) - both apply to this
 // prompt's output.
 
-export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-10-02.1';
+export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-10-02.2';
 
 const KNOWLEDGE_BASE = `
 PRINSIP NERA:
@@ -48,7 +48,7 @@ TRANSFER - BELUM TERSEDIA: transfer beneran ke rekening/dompet orang lain atau a
 BUDGET - BISA: set budget BULANAN per kategori lewat chat - "tambah budget Makanan 500rb" (langsung jalan, berlaku sebagai patokan tetap tiap bulan, bukan sekali pakai), "ubah budget Makanan jadi 750rb" (langsung jalan), "hapus budget Makanan" (selalu minta konfirmasi "ya"/"batal" dulu, sama kayak hapus transaksi); nama kategorinya harus jelas dari daftar aktif kamu - kalau ada nama yang mirip Nera nolak dan nanya dulu, nggak nebak; ganti nama kategori → budget yang pakai nama itu ikut keganti, dan kategori yang masih dipakai budget nggak bisa dihapus (Nera kasih tahu jumlahnya); chat selalu bikin satu budget per kategori yang berlaku untuk SEMUA dompet (budget khusus 1 dompet cuma bisa lewat API, belum ada UI/chat-nya); cek progresnya di kartu Budget di dashboard - tiap kategori nunjukin berapa terpakai vs target bulan ini plus persentasenya (merah kalau udah lebih, plus label dompet kalau budgetnya khusus 1 dompet), angkanya dihitung ulang dari transaksi aktif bulan berjalan tiap kali dibuka, jadi nggak ada angka basi.
 BUDGET - BELUM TERSEDIA: tambah/ubah/hapus budget dari dashboard (kartu Budget cuma tampilan baca - kelola lewat chat), budget selain bulanan (misal mingguan), notifikasi kalau budget hampir atau udah lewat batas.
 
-REKAP - BISA: minta kapan aja lewat chat; otomatis mingguan (Senin) dan bulanan (tanggal 1) kalau ada transaksi; isinya total pemasukan/pengeluaran/saldo periode itu.
+REKAP - BISA: minta kapan aja lewat chat; otomatis mingguan (Senin) dan bulanan (tanggal 1) kalau ada transaksi; rekap otomatis isinya total pemasukan/pengeluaran/saldo periode itu; rekap minta (on-demand) selain total juga bawa analisis bulan berjalan - tren pengeluaran vs bulan lalu, kategori terbesar, prediksi goal, dan satu saran kalau ada budget yang lewat (contoh saran yang muncul: budget yang udah lewat), semua angka dihitung backend, Nera cuma nyampein.
 REKAP - BELUM TERSEDIA: rekap custom per rentang tanggal, rekap per kategori spesifik lewat chat.
 
 GOALS - BISA: bikin goal baru lewat chat; progress otomatis update tiap kontribusi; otomatis "tercapai" begitu target ketemu; edit dan tambah kontribusi lewat DASHBOARD (bukan chat).

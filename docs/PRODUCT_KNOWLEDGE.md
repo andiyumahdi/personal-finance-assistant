@@ -69,9 +69,8 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 ## 5. Rekap
 
 **Bisa:**
-- Minta rekap kapan aja lewat chat
-- Rekap otomatis mingguan (Senin) dan bulanan (tanggal 1) — dikirim cuma kalau ada transaksi di periode itu
-- Isinya total pemasukan, pengeluaran, dan saldo (net) periode itu
+- Minta rekap kapan aja lewat chat — selain total pemasukan/pengeluaran/saldo sejauh ini, rekap minta (on-demand) juga bawa analisis bulan berjalan: tren pengeluaran vs bulan lalu, kategori terbesar, prediksi progress goal aktif, dan satu saran (misal budget yang udah lewat) — semua angka dihitung backend, Nera cuma nyampein
+- Rekap otomatis mingguan (Senin) dan bulanan (tanggal 1) — dikirim cuma kalau ada transaksi di periode itu, isinya total pemasukan, pengeluaran, dan saldo (net) periode itu
 
 **Belum tersedia saat ini:**
 - Rekap custom per rentang tanggal tertentu

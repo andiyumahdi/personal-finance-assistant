@@ -41,9 +41,9 @@ const transferSection = () => sectionLines('TRANSFER');
 const dashboardSection = () => sectionLines('DASHBOARD');
 
 describe('PRODUCT_QUESTION_PROMPT_VERSION (SPECIFICATION.md section 12.3)', () => {
-  test('pinned to the D5 budget/transfer knowledge sync version', () => {
+  test('pinned to the D5 budget/transfer + Sprint E rekap sync version', () => {
     // Bump this whenever KNOWLEDGE_BASE content changes (date-based).
-    assert.equal(PRODUCT_QUESTION_PROMPT_VERSION, 'v2026-10-02.1');
+    assert.equal(PRODUCT_QUESTION_PROMPT_VERSION, 'v2026-10-02.2');
   });
 });
 
@@ -133,6 +133,24 @@ describe('TRANSFER knowledge (mirrors PRODUCT_KNOWLEDGE.md section 11 / D4)', ()
   test('unmatched/invalid wallets fall open to ordinary recording, never vanish', () => {
     assert.match(transferSection(), /nggak pernah hilang diam-diam/);
     assert.match(transferSection(), /dompet yang sama Nera bilang nggak jadi/);
+  });
+});
+
+describe('REKAP knowledge (mirrors PRODUCT_KNOWLEDGE.md section 5 / Sprint E)', () => {
+  test('on-demand recap advertises the Sprint E analysis contents', () => {
+    const rekap = sectionLines('REKAP');
+    assert.match(rekap, /rekap minta \(on-demand\).*analisis bulan berjalan/);
+    assert.match(rekap, /tren pengeluaran vs bulan lalu/);
+    assert.match(rekap, /prediksi goal/);
+    assert.match(rekap, /saran kalau ada budget/);
+    assert.match(rekap, /dihitung backend, Nera cuma nyampein/);
+  });
+
+  test('scheduled recaps stay totals-only', () => {
+    assert.match(
+      sectionLines('REKAP - BISA'),
+      /rekap otomatis isinya total pemasukan\/pengeluaran\/saldo periode itu/,
+    );
   });
 });
 

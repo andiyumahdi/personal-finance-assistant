@@ -685,6 +685,55 @@ most useful once Sprint C (richer transaction history/search) and Sprint
 D (wallets/budget) exist to analyze - insight quality depends on there
 being organized data to draw on.
 
+**Sprint E ✅ DONE** (delivered as one integrated implementation).
+Decisions as implemented:
+- **Trigger:** the insight rides the EXISTING `recap` route - no new
+  classifier value (enum stays 17, the FROZEN intent list untouched) and
+  no new trigger keywords (phrasing-variety changes stay deferred). The
+  router still resolves rule-based; the persona layer gets the
+  SPECIFICATION.md section 7.3 intent `insight` (section 10's
+  "on-demand insight").
+- **Compute-on-read, no migration:** `domain/insights.js` (pure helpers
+  + one read-only async composer) builds the facts packet from existing
+  rows - current/previous WIB month slices of the SAME transactions
+  query the recap already ran (half-open `slicePeriod`, matching the
+  query windows), D3's `listBudgetsWithProgress` (2 queries), and the
+  existing goals query. Zero schema, zero API, zero frontend changes;
+  scheduled weekly/monthly recaps (Sprint A, frozen) are untouched.
+- **Five scope items in one report:** AI Insight = the reply itself;
+  Monthly Analysis = current vs previous WIB month totals + top
+  category with pre-rounded share; Spending Trend = the existing
+  `calculateTrend` month-over-month, percent pre-rounded; Goal
+  Prediction = per active goal the remaining amount and
+  `requiredPerMonth` vs the pace observed from ACTIVE transaction
+  history (net cashflow per average month, >=30 days of history or
+  `insufficient_history`), verdicts overdue / no_pace / on_track /
+  behind with a projected date; Recommendation = at most ONE fact-based
+  candidate, strict priority budget >100% -> goal overdue/behind ->
+  expense trend >=10% up, null otherwise - never judgmental advice
+  (TONE_AND_PERSONALITY.md section 12; the goal CTA is the one
+  RESPONSE_FORMATTING.md section 3b explicitly anticipated).
+- **Transfers stay invisible** to every aggregate by construction
+  (type-scoped math, the Sprint D4 stance) - locked by test.
+- **Degradation:** a failed budgets/goals read logs `trace.insightError`
+  and falls back to a totals-only report; the recap reply never
+  disappears (SPECIFICATION.md section 1.5's spirit applied to reads).
+- **Output shape:** persona prompt `v2026-10-02` adds the Report rule
+  (RESPONSE_FORMATTING.md section 2) for `insight` ONLY - bold WhatsApp
+  heading, max 5 bullets in totals -> trend -> goals -> recommendation
+  order, CTA only when a recommendation is present - so every other
+  intent's shape, including the scheduled recaps, is untouched. The
+  product-question knowledge synced in the same batch:
+  PRODUCT_KNOWLEDGE.md section 5 + prompt `v2026-10-02.2`.
+- **Verification:** backend unit 658/658 (34 new: insights domain,
+  persona prompt, Sprint E flow suite against the in-memory fake),
+  integration 23/23 (real DB), golden 15/15 (extraction prompt
+  untouched, re-run per 12.3), `test:intent` 8/9 (the 1 failure is the
+  pre-existing `woy pagi` -> rule-router leak, report-only, baseline
+  unchanged), backend lint 0 errors, frontend lint + `next build`
+  clean; a live persona spot-check confirmed the Report shape for both
+  full and null facts packets.
+
 ### After Sprint E
 
 Full deploy (frontend to Vercel, if not already done earlier for

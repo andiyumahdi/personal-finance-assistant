@@ -30,6 +30,7 @@ import * as transfersDomain from '../domain/transfers.js';
 import * as goalsDomain from '../domain/goals.js';
 import * as contextDomain from '../domain/context.js';
 import { calculateTotals } from '../domain/summary.js';
+import * as insightsDomain from '../domain/insights.js';
 import { CATEGORIES, isDefaultCategory } from '../config/categories.js';
 
 export const STATES = {
@@ -1270,7 +1271,21 @@ async function handleRecapIntent(user, _rawText, trace) {
   const totals = calculateTotals(transactions);
   trace.summary = totals;
 
-  const persona = await aiProvider.generateReply('recap', totals);
+  // Sprint E (Intelligence): the on-demand insight report rides the
+  // existing 'recap' route (the classifier enum stays 17 - the FROZEN
+  // intent set is untouched; SPECIFICATION.md section 10 phase 4 calls
+  // this "on-demand insight"). Budgets/goals reads degrade to a
+  // totals-only report rather than failing the reply - an insight
+  // partial outage must never take down the recap itself.
+  let insight = null;
+  try {
+    insight = await insightsDomain.buildInsightFacts(user.id, transactions);
+    trace.insight = insight;
+  } catch (err) {
+    trace.insightError = err.message;
+  }
+
+  const persona = await aiProvider.generateReply('insight', { totals, insight });
   trace.persona = persona;
 
   return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
