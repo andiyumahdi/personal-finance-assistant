@@ -41,9 +41,9 @@ const transferSection = () => sectionLines('TRANSFER');
 const dashboardSection = () => sectionLines('DASHBOARD');
 
 describe('PRODUCT_QUESTION_PROMPT_VERSION (SPECIFICATION.md section 12.3)', () => {
-  test('pinned to the D5 budget/transfer + Sprint E rekap sync version', () => {
+  test('pinned to the MVP finalization sync version (dashboard edit/hapus + pengingat harian + goal per-bulan)', () => {
     // Bump this whenever KNOWLEDGE_BASE content changes (date-based).
-    assert.equal(PRODUCT_QUESTION_PROMPT_VERSION, 'v2026-10-02.2');
+    assert.equal(PRODUCT_QUESTION_PROMPT_VERSION, 'v2026-10-02.3');
   });
 });
 
@@ -176,6 +176,40 @@ describe('CARA PAKAI + DASHBOARD sync', () => {
     assert.match(
       dashboardSection(),
       /DASHBOARD - BELUM TERSEDIA:.*tambah\/ubah\/hapus budget dari dashboard/,
+    );
+  });
+});
+
+describe('MVP finalization sync (mirrors PRODUCT_KNOWLEDGE.md sections 2/3/5/6/7)', () => {
+  test('DASHBOARD advertises edit + hapus transactions; create-only stays unavailable', () => {
+    assert.match(dashboardSection(), /DASHBOARD - BISA:.*edit transaksi \(ubah nominal\/kategori\/tipe\)/);
+    assert.match(dashboardSection(), /hapusnya dengan konfirmasi/);
+    const belum = sectionLines('DASHBOARD - BELUM TERSEDIA');
+    assert.match(belum, /tambah transaksi baru dari dashboard/);
+    assert.doesNotMatch(belum, /tambah\/edit transaksi/, 'the old edit-unavailable claim is gone');
+  });
+
+  test('TRANSAKSI section carries the dashboard edit/hapus path too', () => {
+    const transaksi = sectionLines('TRANSAKSI - BISA');
+    assert.match(transaksi, /EDIT dan HAPUS juga dari dashboard halaman Transaksi/);
+    assert.match(transaksi, /"undo" di chat tetap bisa balikin/);
+  });
+
+  test('pengingat harian: once per day, only for users who usually log', () => {
+    assert.match(sectionLines('REKAP'), /PENGINGAT HARIAN/);
+    assert.match(sectionLines('REKAP - BISA'), /sekali sehari - nggak diulang-ulang/);
+    assert.match(
+      PRODUCT_QUESTION_SYSTEM_INSTRUCTION,
+      /- Pengingat harian: kalau hari itu belum ada catatan padahal biasanya rajin/,
+    );
+  });
+
+  test('goal creation advertises the backend-computed monthly saving', () => {
+    assert.match(sectionLines('GOALS - BISA'), /ngitung tabungan per bulan/);
+    assert.match(sectionLines('GOALS - BISA'), /angka dihitung backend, bukan Nera/);
+    assert.match(
+      PRODUCT_QUESTION_SYSTEM_INSTRUCTION,
+      /langsung dikasih tahu berapa yang harus disisihin tiap bulan/,
     );
   });
 });

@@ -95,13 +95,13 @@ function FlowStack() {
     {
       icon: MessageCircle,
       title: "WhatsApp",
-      body: "“Spent $18 on lunch”",
+      body: "“jajan makan siang 18rb”",
       accent: "text-[color:oklch(0.72_0.15_150)]",
     },
     {
       icon: Bot,
       title: "Nera AI",
-      body: "Categorized as Food · $18.00",
+      body: "Categorized as Makanan & Minuman · Rp18.000",
       accent: "text-primary",
     },
     {

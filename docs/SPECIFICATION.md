@@ -270,6 +270,8 @@ Sprint D4 notes: `type` also accepts `transfer` (the Transactions page Type filt
 |---|---|---|
 | GET | `/api/summary?period=day\|week\|month` | Computed totals, category breakdown, trend vs previous period (numbers only, no AI text — dashboard renders its own charts) |
 
+Doc-only sync note (MVP finalization): the implemented route is `GET /api/summary` with NO `period` parameter — it returns the current WIB month's totals, breakdown, and trend vs last month, which is everything the dashboard renders. The `day`/`week` values above are unimplemented and should not be read as a promise; add the parameter back here if a consumer for other periods ever appears.
+
 ### 4.4 Goals
 | Method | Path | Description |
 |---|---|---|

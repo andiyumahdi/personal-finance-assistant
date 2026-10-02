@@ -182,4 +182,44 @@ describe('listTransactions (read-only, user-scoped)', () => {
     // ...and mutated nothing
     assert.equal(JSON.stringify(fake.tables.transactions), before);
   });
+
+  test('requires userId', async () => {
+    await assert.rejects(() => transactionQueries.listTransactions(undefined, {}), /user-scoped/);
+  });
+
+  test('escapeIlike neutralizes LIKE wildcards in user search text', async () => {
+    // A raw "100%" would become %.100%.% and match EVERY row; escaped it
+    // only matches text containing the literal "100%".
+    const literalPct = makeTx('tx-a-pct', USER_A, { raw_text: 'tagihan listrik 100% 250rb' });
+    fake.tables.transactions.push(literalPct);
+
+    const rows = await transactionQueries.listTransactions(USER_A, { search: '100%' });
+    assert.deepEqual(
+      rows.map((tx) => tx.id),
+      ['tx-a-pct'],
+    );
+
+    // '_' is a single-char wildcard too - escaped, it is literal.
+    const underscore = makeTx('tx-a-ud', USER_A, { raw_text: 'kopi_robusta 20rb' });
+    fake.tables.transactions.push(underscore);
+    const rows2 = await transactionQueries.listTransactions(USER_A, { search: 'i_r' });
+    assert.deepEqual(
+      rows2.map((tx) => tx.id),
+      ['tx-a-ud'],
+    );
+    const rows3 = await transactionQueries.listTransactions(USER_A, { search: 'i-r' });
+    assert.deepEqual(
+      rows3.map((tx) => tx.id),
+      [],
+    );
+  });
+});
+
+describe('escapeIlike (pure)', () => {
+  test('escapes backslash, percent and underscore - nothing else', () => {
+    assert.equal(transactionQueries.escapeIlike('100%'), '100\\%');
+    assert.equal(transactionQueries.escapeIlike('a_b'), 'a\\_b');
+    assert.equal(transactionQueries.escapeIlike('C:\\dir'), 'C:\\\\dir');
+    assert.equal(transactionQueries.escapeIlike('jajan 25rb'), 'jajan 25rb');
+  });
 });

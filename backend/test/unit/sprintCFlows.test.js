@@ -426,3 +426,44 @@ describe('edit flow', () => {
     assert.equal(tx('tx-a2').deleted_at, null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tampered state_context (MVP finalization): the ids stored in state are
+// never trusted as ownership proof - the user-scoped lookup is the only
+// boundary (SPECIFICATION.md section 11.6 requirement, query layer proven
+// in queries tests; here the FLOW is proven unable to be steered into
+// touching another user's rows).
+// ---------------------------------------------------------------------------
+
+describe('tampered state_context (pipeline-level ownership)', () => {
+  test("a delete confirm aimed at ANOTHER user's transaction deletes nothing", async () => {
+    // B's state_context was tampered with: it points at A's row.
+    userB().state = STATES.AWAITING_DELETE_CONFIRMATION;
+    userB().state_context = { awaiting: 'confirm', deleteTargetId: 'tx-a1' };
+
+    const trace = await handleIncomingMessage(PHONE_B, 'ya');
+
+    assert.match(trace.reply, /nggak ketemu/, 'scoped lookup refuses the foreign id');
+    assert.equal(userB().state, STATES.IDLE, 'the flow ends safely');
+    assert.ok(tx('tx-a1'), "A's transaction survives");
+    assert.equal(tx('tx-a1').deleted_at, null, 'never soft-deleted');
+    assert.equal(userA().last_deleted_transaction_id, null, "A's undo pointer never set");
+    assert.equal(userB().last_deleted_transaction_id, null, 'B deleted nothing');
+  });
+
+  test("candidateIds pointing at ANOTHER user's rows never pick them", async () => {
+    userB().state = STATES.AWAITING_DELETE_CONFIRMATION;
+    userB().state_context = { awaiting: 'target', candidateIds: ['tx-a1', 'tx-a2'] };
+
+    const trace = await handleIncomingMessage(PHONE_B, '1');
+
+    // The scoped candidate lookup refuses A's ids, and the criteria parsed
+    // from '1' find nothing OWNED by B -> re-ask for a target instead of
+    // rendering a confirmation over someone else's row.
+    assert.equal(userB().state, STATES.AWAITING_DELETE_CONFIRMATION, 'stays in the target phase');
+    assert.deepEqual(userB().state_context, { awaiting: 'target' }, 'foreign candidate list dropped');
+    assert.ok(!/Hapus transaksi ini/.test(trace.reply), 'no confirmation for a foreign row');
+    assert.equal(tx('tx-a1').deleted_at, null, 'A rows untouched');
+    assert.equal(tx('tx-a2').deleted_at, null, 'A rows untouched');
+  });
+});

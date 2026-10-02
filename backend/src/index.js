@@ -6,8 +6,7 @@
 // The Baileys client (src/whatsapp/client.js) is intentionally NOT
 // imported here anymore - it's deprecated in favor of the Cloud API
 // webhook, but stays in the codebase until the webhook path is confirmed
-// stable in real use (see docs/whatsapp-cloud-api-setup.md
-// "Baileys Cleanup").
+// stable in real use (tracked in docs/ROADMAP.md).
 //
 // Recap scheduling uses external cron (POST /internal/recap), not
 // node-cron - per the trigger-agnostic design in
@@ -23,6 +22,7 @@ import { handleWebhookVerification, handleWebhookMessage } from './whatsapp/webh
 import { PRIVACY_POLICY_HTML } from './utils/privacyPolicy.js';
 import { runWeeklyRecap } from './scheduler/weeklyRecap.js';
 import { runMonthlyRecap } from './scheduler/monthlyRecap.js';
+import { runDailyReminder } from './scheduler/dailyReminder.js';
 import { logger } from './utils/logger.js';
 
 const app = express();
@@ -36,6 +36,9 @@ let lastSuccessfulMessageAt = null;
 // stays stale past when a recap was expected, that's visible in /healthz
 // without needing to dig through logs.
 let lastRecapRunAt = null;
+// Separate timestamp for the daily nudge (section 2.10): sharing the
+// recap field would mask a stale WEEKLY recap behind a healthy daily run.
+let lastDailyReminderRunAt = null;
 
 // Captures the raw request body (needed for X-Hub-Signature-256
 // verification - the signature is computed over the exact bytes Meta
@@ -64,10 +67,10 @@ app.post('/webhook', async (req, res) => {
 });
 
 // Triggered by an external cron service (e.g. cron-job.org) hitting this
-// with ?period=weekly or ?period=monthly. Protected by a shared secret -
-// this is not user-facing, it's a machine-to-machine trigger, so a simple
-// header check is proportionate (no need for full auth infrastructure at
-// this project's scale).
+// with ?period=daily, ?period=weekly or ?period=monthly. Protected by a
+// shared secret - this is not user-facing, it's a machine-to-machine
+// trigger, so a simple header check is proportionate (no need for full
+// auth infrastructure at this project's scale).
 app.post('/internal/recap', async (req, res) => {
   const providedSecret = req.get('X-Internal-Secret');
   if (!process.env.INTERNAL_CRON_SECRET || providedSecret !== process.env.INTERNAL_CRON_SECRET) {
@@ -75,13 +78,19 @@ app.post('/internal/recap', async (req, res) => {
   }
 
   const period = req.query.period;
-  if (period !== 'weekly' && period !== 'monthly') {
-    return res.status(400).json({ error: 'Missing or invalid ?period= (expected "weekly" or "monthly")' });
+  const runners = {
+    daily: runDailyReminder,
+    weekly: runWeeklyRecap,
+    monthly: runMonthlyRecap,
+  };
+  if (!runners[period]) {
+    return res.status(400).json({ error: 'Missing or invalid ?period= (expected "daily", "weekly" or "monthly")' });
   }
 
   try {
-    const result = period === 'weekly' ? await runWeeklyRecap() : await runMonthlyRecap();
-    lastRecapRunAt = result.completedAt;
+    const result = await runners[period]();
+    if (period === 'daily') lastDailyReminderRunAt = result.completedAt;
+    else lastRecapRunAt = result.completedAt;
     res.json({ period, ...result });
   } catch (err) {
     logger.error('Recap run threw unexpectedly', { period, error: err.message });
@@ -94,12 +103,12 @@ app.get('/healthz', (req, res) => {
     status: 'ok',
     lastSuccessfulMessageAt,
     lastRecapRunAt,
+    lastDailyReminderRunAt,
   });
 });
 
-// Required by Meta before the App can be published - see
-// docs/whatsapp-cloud-api-setup.md. Set this exact URL as the
-// "Privacy policy URL" in App Settings > Basic.
+// Required by Meta before the App can be published (Meta mandates a
+// Privacy Policy URL in App Settings > Basic). Set this exact URL there.
 app.get('/privacy-policy', (req, res) => {
   res.type('html').send(PRIVACY_POLICY_HTML);
 });

@@ -43,12 +43,12 @@ finance-assistant/
 | Layer | Technology |
 |---|---|
 | Backend | Node.js (JavaScript), Express |
-| WhatsApp gateway | WhatsApp Cloud API (Meta) - webhook-based, see `docs/whatsapp-cloud-api-setup.md` |
+| WhatsApp gateway | WhatsApp Cloud API (Meta) - webhook-based, signature-verified (see `backend/src/whatsapp/webhook.js`) |
 | AI | Gemini API (free tier) |
 | Database | Supabase (PostgreSQL, free tier) |
 | Frontend | Next.js (App Router, TypeScript) |
 | Auth | Google OAuth (NextAuth), linked to WhatsApp phone number |
-| Backend hosting | Render (free tier) - see `docs/whatsapp-cloud-api-setup.md` §Deployment |
+| Backend hosting | Render (free tier) - see `docs/SPECIFICATION.md` section 8 |
 | Frontend hosting | Vercel |
 
 ## Running the backend
@@ -74,20 +74,21 @@ npm run dev
 See [`docs/SETUP.md`](./docs/SETUP.md) for the complete local development
 setup, [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) for the operational
 runbook (health monitoring, error handling, backups, secrets rotation),
-and [`docs/whatsapp-cloud-api-setup.md`](./docs/whatsapp-cloud-api-setup.md)
-for WhatsApp Cloud API account setup.
+and [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) as the quick
+architecture index.
 
 ## Status
 
-**Phases A-E implemented** (database, domain layer, AI layer, message
-pipeline, WhatsApp Cloud API webhook) - see
+**Locked Roadmap MVP implemented** - Sprints A-E (database, domain layer,
+AI layer, message pipeline, WhatsApp Cloud API webhook, conversation UX,
+transaction management, categories/wallets/budgets/transfers, intelligence)
+plus the MVP finalization pass (transaction edit + soft-delete on the
+dashboard, daily idle reminder, goal monthly-saving hint, user-scoped
+query hardening, rate limiting, error classification, observability) - see
 [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full phase breakdown and
-current exit-criteria status. On the Locked Roadmap there, Sprints A-D
-are implemented - foundation, conversation UX, transaction management,
-and financial organization (categories, source accounts/wallets,
-budgets, transfers between wallets); Sprint E (Intelligence) is next.
-The former Post-MVP Backlog - which listed account/wallet management as
-deferred - was superseded and absorbed into that Locked Roadmap.
+exit criteria. The former Post-MVP Backlog - which listed account/wallet
+management as deferred - was superseded and absorbed into that Locked
+Roadmap.
 
 ## License
 

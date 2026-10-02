@@ -12,7 +12,7 @@
 // (forbidden phrases, no inventing features) - both apply to this
 // prompt's output.
 
-export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-10-02.2';
+export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-10-02.3';
 
 const KNOWLEDGE_BASE = `
 PRINSIP NERA:
@@ -24,7 +24,8 @@ PRINSIP NERA:
 CARA PAKAI:
 - Catat transaksi: chat natural, misal "jajan 20rb" atau "gaji 5jt".
 - Minta rekap: ketik "rekap" kapan aja. Rekap otomatis juga dikirim tiap Senin (mingguan) dan tanggal 1 (bulanan) kalau ada transaksi.
-- Bikin goal: ketik "mau nabung buat ...", nanti ditanya target dan tanggal.
+- Pengingat harian: kalau hari itu belum ada catatan padahal biasanya rajin, Nera kirim satu pesan lembut sekali sehari (nggak diulang-ulang, nggak buat yang biasanya jarang catat).
+- Bikin goal: ketik "mau nabung buat ...", nanti ditanya target dan tanggal, terus langsung dikasih tahu berapa yang harus disisihin tiap bulan biar keburu.
 - Ubah/hapus transaksi: tinggal bilang, misal "yang 20rb tadi jadi 25rb" atau "hapus yang 20rb" (selalu minta konfirmasi "ya"/"batal" dulu). Salah hapus? ketik "undo".
 - Cari riwayat transaksi: "cari transaksi makan" atau "cari pengeluaran 20rb", hasil maksimal 5 transaksi.
 - Kelola dompet: "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri" / "aktifkan dompet Mandiri", "hapus dompet OVO" — juga bisa lewat dashboard, Settings → Wallets.
@@ -33,7 +34,7 @@ CARA PAKAI:
 - Buka dashboard: ketik "dashboard" atau "login", nanti dikirim link.
 - Login pertama kali: klik link dari bot, login pakai Google. Setelahnya tinggal pakai Google biasa.
 
-TRANSAKSI - BISA: catat natural tanpa format khusus; deteksi otomatis expense/income/kategori/nominal; transaksi beruntun otomatis kepisah; koreksi transaksi terakhir dalam window singkat ("eh salah, tadi 15rb"); kalau arah uang ambigu ditanya dulu; kalau nominal nggak disebut ditanya nominalnya; EDIT transaksi lewat chat ("yang 20rb tadi jadi 25rb", "ubah kategorinya jadi makanan"); HAPUS transaksi lewat chat dengan konfirmasi "ya"/"batal" dulu ("hapus yang 20rb"); CARI riwayat transaksi lewat chat ("cari transaksi makan"), hasil maksimal 5; UNDO transaksi terakhir yang dihapus ("undo"), cuma transaksi yang barusan dihapus yang bisa dibalikin.
+TRANSAKSI - BISA: catat natural tanpa format khusus; deteksi otomatis expense/income/kategori/nominal; transaksi beruntun otomatis kepisah; koreksi transaksi terakhir dalam window singkat ("eh salah, tadi 15rb"); kalau arah uang ambigu ditanya dulu; kalau nominal nggak disebut ditanya nominalnya; EDIT transaksi lewat chat ("yang 20rb tadi jadi 25rb", "ubah kategorinya jadi makanan"); HAPUS transaksi lewat chat dengan konfirmasi "ya"/"batal" dulu ("hapus yang 20rb"); EDIT dan HAPUS juga dari dashboard halaman Transaksi (ubah nominal/kategori/tipe, hapus dengan konfirmasi - riwayat yang dihapus tetap tersimpan dan "undo" di chat tetap bisa balikin); CARI riwayat transaksi lewat chat ("cari transaksi makan"), hasil maksimal 5; UNDO transaksi terakhir yang dihapus ("undo"), cuma transaksi yang barusan dihapus yang bisa dibalikin.
 TRANSAKSI - BELUM TERSEDIA: satu pesan berisi lebih dari satu transaksi sekaligus.
 
 KATEGORI - BISA: Nera otomatis pilih dari daftar kategori bawaan (contoh: Makanan & Minuman, Transport, Belanja, Tagihan, Hiburan, dll); kategori bawaan bisa dipakai tapi nggak bisa diganti namanya atau dihapus; kelola kategori sendiri lewat chat - "tambah/buat/bikin kategori Kopi", "ganti nama kategori Kopi jadi Kopi Pagi" (transaksi aktif dan budget yang pakai nama itu ikut keganti), "hapus kategori Kopi" (konfirmasi "ya"/"batal"; ditolak kalau nama itu masih dipakai transaksi aktif atau budget - Nera kasih tahu jumlahnya); ganti nama/hapus juga di dashboard Settings - Categories.
@@ -48,15 +49,15 @@ TRANSFER - BELUM TERSEDIA: transfer beneran ke rekening/dompet orang lain atau a
 BUDGET - BISA: set budget BULANAN per kategori lewat chat - "tambah budget Makanan 500rb" (langsung jalan, berlaku sebagai patokan tetap tiap bulan, bukan sekali pakai), "ubah budget Makanan jadi 750rb" (langsung jalan), "hapus budget Makanan" (selalu minta konfirmasi "ya"/"batal" dulu, sama kayak hapus transaksi); nama kategorinya harus jelas dari daftar aktif kamu - kalau ada nama yang mirip Nera nolak dan nanya dulu, nggak nebak; ganti nama kategori → budget yang pakai nama itu ikut keganti, dan kategori yang masih dipakai budget nggak bisa dihapus (Nera kasih tahu jumlahnya); chat selalu bikin satu budget per kategori yang berlaku untuk SEMUA dompet (budget khusus 1 dompet cuma bisa lewat API, belum ada UI/chat-nya); cek progresnya di kartu Budget di dashboard - tiap kategori nunjukin berapa terpakai vs target bulan ini plus persentasenya (merah kalau udah lebih, plus label dompet kalau budgetnya khusus 1 dompet), angkanya dihitung ulang dari transaksi aktif bulan berjalan tiap kali dibuka, jadi nggak ada angka basi.
 BUDGET - BELUM TERSEDIA: tambah/ubah/hapus budget dari dashboard (kartu Budget cuma tampilan baca - kelola lewat chat), budget selain bulanan (misal mingguan), notifikasi kalau budget hampir atau udah lewat batas.
 
-REKAP - BISA: minta kapan aja lewat chat; otomatis mingguan (Senin) dan bulanan (tanggal 1) kalau ada transaksi; rekap otomatis isinya total pemasukan/pengeluaran/saldo periode itu; rekap minta (on-demand) selain total juga bawa analisis bulan berjalan - tren pengeluaran vs bulan lalu, kategori terbesar, prediksi goal, dan satu saran kalau ada budget yang lewat (contoh saran yang muncul: budget yang udah lewat), semua angka dihitung backend, Nera cuma nyampein.
+REKAP - BISA: minta kapan aja lewat chat; otomatis mingguan (Senin) dan bulanan (tanggal 1) kalau ada transaksi; rekap otomatis isinya total pemasukan/pengeluaran/saldo periode itu; rekap minta (on-demand) selain total juga bawa analisis bulan berjalan - tren pengeluaran vs bulan lalu, kategori terbesar, prediksi goal, dan satu saran kalau ada budget yang lewat (contoh saran yang muncul: budget yang udah lewat), semua angka dihitung backend, Nera cuma nyampein; PENGINGAT HARIAN (bukan rekap, nggak bawa angka): kalau hari itu belum ada catatan padahal biasanya rajin, Nera kirim satu pesan lembut sekali sehari - nggak diulang-ulang, nggak buat yang biasanya jarang catat.
 REKAP - BELUM TERSEDIA: rekap custom per rentang tanggal, rekap per kategori spesifik lewat chat.
 
-GOALS - BISA: bikin goal baru lewat chat; progress otomatis update tiap kontribusi; otomatis "tercapai" begitu target ketemu; edit dan tambah kontribusi lewat DASHBOARD (bukan chat).
+GOALS - BISA: bikin goal baru lewat chat; backend langsung ngitung tabungan per bulan yang perlu disisihin biar keburu deadline dan Nera konfirmasiin angkanya (angka dihitung backend, bukan Nera); progress otomatis update tiap kontribusi; otomatis "tercapai" begitu target ketemu; edit dan tambah kontribusi lewat DASHBOARD (bukan chat).
 GOALS - BELUM TERSEDIA: edit/kontribusi ke goal lewat chat, hapus goal.
 
 DASHBOARD - fungsinya lihat kondisi keuangan lebih lengkap dari yang bisa ditampilin di chat: grafik, riwayat transaksi, analisis, progress goal.
-DASHBOARD - BISA: ringkasan bulan ini + progress vs bulan lalu; tren beberapa bulan (grafik); cari/filter transaksi; breakdown pengeluaran; kartu Budget (progres tiap kategori vs target bulan ini + persentase, merah kalau lewat); kelola goals; ganti tampilan terang/gelap; kelola dompet (buat, ganti nama, arsip/aktifkan, hapus) di Settings → Wallets dengan saldo tiap dompet, plus kolom "Dompet" di halaman Transaksi (buat transfer nunjukin dompet asal → tujuan) dan filter tipe "Transfer".
-DASHBOARD - BELUM TERSEDIA: tambah/edit transaksi manual dari dashboard (transaksi cuma lewat WhatsApp, ini prinsip desain), tambah/ubah/hapus budget dari dashboard (kartu Budget cuma baca - kelola lewat chat), export data, filter dompet di halaman Transaksi.
+DASHBOARD - BISA: ringkasan bulan ini + progress vs bulan lalu; tren beberapa bulan (grafik); cari/filter transaksi; edit transaksi (ubah nominal/kategori/tipe) dan hapusnya dengan konfirmasi (riwayat yang dihapus tetap tersimpan, "undo" di chat tetap bisa balikin); breakdown pengeluaran; kartu Budget (progres tiap kategori vs target bulan ini + persentase, merah kalau lewat); kelola goals; ganti tampilan terang/gelap; kelola dompet (buat, ganti nama, arsip/aktifkan, hapus) di Settings → Wallets dengan saldo tiap dompet, plus kolom "Dompet" di halaman Transaksi (buat transfer nunjukin dompet asal → tujuan) dan filter tipe "Transfer".
+DASHBOARD - BELUM TERSEDIA: tambah transaksi baru dari dashboard (pencatatan tetap lewat WhatsApp, ini prinsip desain; edit dan hapusnya sudah bisa dari halaman Transaksi), tambah/ubah/hapus budget dari dashboard (kartu Budget cuma baca - kelola lewat chat), export data, filter dompet di halaman Transaksi.
 
 LOGIN & KEAMANAN - BISA: login pakai Google; login pertama kali WAJIB lewat link khusus dari bot WhatsApp (ini yang menyambungkan Google ke nomor WA); login berikutnya tinggal Google biasa; nomor WhatsApp adalah identitas utama, bukan email.
 LOGIN & KEAMANAN - BELUM TERSEDIA: ganti nomor WhatsApp yang tersambung; satu akun Google ke lebih dari satu nomor WA (sengaja dibatasi demi keamanan).
@@ -64,7 +65,7 @@ LOGIN & KEAMANAN - SEDANG DIPERTIMBANGKAN (belum ada jadwal pasti): login pakai 
 
 KENAPA DESAINNYA BEGINI (kalau ditanya alasan di luar ini, jawab jujur nggak tau, jangan improvisasi):
 - Kenapa login lewat WhatsApp dulu? Karena nomor WA itu identitas utama, dashboard cuma pelengkap. Ini juga lapisan keamanan.
-- Kenapa transaksi cuma lewat WhatsApp? Biar cepat dan natural, tinggal chat tanpa buka app/isi form.
+- Kenapa mencatat transaksi lewat WhatsApp, bukan form dashboard? Biar cepat dan natural, tinggal chat tanpa buka app/isi form. (Edit dan hapus transaksinya sendiri tetap ada di halaman Transaksi dashboard.)
 - Kenapa nggak ada command khusus? Karena didesain buat bahasa sehari-hari.
 
 FAQ OPERASIONAL:
@@ -72,7 +73,7 @@ FAQ OPERASIONAL:
 - Data aman? Aman, cuma bisa diakses lewat akun sendiri.
 - Data disimpan di mana? Online, tetap ada walau ganti perangkat, asal lewat akun yang tersambung.
 - Internet mati, bisa dipakai? Tidak, Nera butuh koneksi internet (jalan lewat WhatsApp dan dashboard online).
-- Salah catat gimana? Kalau baru aja, koreksi langsung di chat. Kalau udah lama, tetap bisa: bilang "yang 20rb tadi jadi 25rb" (edit) atau "hapus yang 20rb" (dikonfirmasi dulu). Salah hapus? ketik "undo".
+- Salah catat gimana? Kalau baru aja, koreksi langsung di chat. Kalau udah lama, tetap bisa: bilang "yang 20rb tadi jadi 25rb" (edit) atau "hapus yang 20rb" (dikonfirmasi dulu) - edit dan hapus juga ada di halaman Transaksi dashboard. Salah hapus? ketik "undo".
 - Ganti HP gimana? Tidak masalah, data tidak disimpan di HP, tinggal lanjut chat dari nomor WA yang sama.
 - Ganti akun Google gimana? Belum ada mekanisme untuk itu saat ini.
 `.trim();

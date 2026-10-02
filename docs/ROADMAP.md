@@ -237,16 +237,18 @@ By this point, `.env` already has Supabase (Phase A) and Gemini (Phase C) creden
 
 ---
 
-## Phase E — WhatsApp Cloud API (starts only once the Meta account is ready)
+## Phase E — WhatsApp Cloud API (transport swap)
 
-**Not started now.** Scope, once unblocked:
+**Code complete** — implemented in `9e1d010` ("feat(backend): implement
+Phase E - WhatsApp Cloud API webhook + send"). The two boxes that need
+live Meta/infrastructure access stay open until verified:
 
-- [ ] `src/whatsapp/webhook.js` — `GET /webhook` verification handler
-- [ ] `src/whatsapp/webhook.js` — `POST /webhook` handler, signature validation **first** (mandatory, see the setup guide's Webhook Security section), then delegates to the Phase D pipeline
-- [ ] `src/whatsapp/sendMessage.js` — outbound sending via Graph API, replacing the Baileys stub (which stays in the codebase as deprecated, not deleted, until this phase is stable — see the setup guide's Baileys Cleanup section)
-- [ ] Scheduler trigger wiring — connect the external cron (or whichever trigger mechanism is chosen at deployment time) to the scheduler abstraction from Phase B, without touching the scheduler's internal business logic
-- [ ] Deployment to a provider with a public HTTPS endpoint (Render, Railway, Fly.io, or VPS — not locked to one, per the setup guide's Deployment section)
-- [ ] End-to-end test: real WhatsApp message in → real reply out
+- [x] `src/whatsapp/webhook.js` — `GET /webhook` verification handler
+- [x] `src/whatsapp/webhook.js` — `POST /webhook` handler, signature validation **first** (mandatory: missing/invalid `X-Hub-Signature-256` is rejected before any parsing), then delegates to the Phase D pipeline
+- [x] `src/whatsapp/sendMessage.js` — outbound sending via Graph API, replacing the Baileys stub (which stays in the codebase as deprecated, not deleted, until this path is stable in real use)
+- [x] Scheduler trigger wiring — the external cron calls `POST /internal/recap?period=daily|weekly|monthly` (shared-secret protected) into the scheduler abstraction from Phase B, without touching the scheduler's internal business logic (registering/scheduling the cron calls themselves lives in the external cron service, per `docs/OPERATIONS.md`)
+- [ ] Deployment to a provider with a public HTTPS endpoint (README targets Render free tier — confirm it is live before checking this off)
+- [ ] End-to-end test: real WhatsApp message in → real reply out (needs the live Meta app + a real inbound message)
 
 **Exit criteria:** a real WhatsApp message, sent by a real user, is correctly recorded and replied to, through the deployed webhook, using the exact same Phase B/C/D logic that was already proven locally — confirming this phase really was "just" a transport layer swap.
 
@@ -733,6 +735,85 @@ Decisions as implemented:
   unchanged), backend lint 0 errors, frontend lint + `next build`
   clean; a live persona spot-check confirmed the Report shape for both
   full and null facts packets.
+
+### MVP Finalization (Locked Roadmap completion)
+
+Goal: close the remaining gaps between the Locked Roadmap's promises and
+the implementation - the security holes the audit found, every dashboard
+capability PRODUCT_KNOWLEDGE.md claims in a "Bisa" line, the section 11
+honest-reply/observability items, and the section 2.10 daily nudge.
+Decisions as implemented:
+
+- **P0 - goal scoping:** every id-keyed goal read/update filters
+  `user_id` in the query (`getGoalById`, `updateGoalById`,
+  `assertUserScope`; `updateGoalProgress(goalId, userId, ...)`) - the
+  service-role key bypasses RLS, so application-level scoping is the only
+  ownership boundary, and knowing another user's goal id is never enough.
+  Foreign-goal denial proven at query + domain level.
+- **P0 - transactions/[id] route:** GET/PATCH/DELETE behind the auth
+  guard, malformed uuid -> 404, PATCH follows the section 2.11 edit
+  policy (amount/category/type only; transfer rows amount-only -> 409
+  `transfer_locked`; `type` moves income<->expense only; category must be
+  active), DELETE = soft-delete plus a best-effort, channel-agnostic undo
+  pointer (`users.last_deleted_transaction_id`) - and the dashboard
+  never CREATES transactions.
+- **Dashboard edit/hapus UI:** transaction edit dialog + Actions column
+  (desktop and mobile) with confirm-before-delete; PRODUCT_KNOWLEDGE.md
+  sections 2/3/5/6/7/9/10 and the embedded product-question knowledge
+  synced in one pass (prompt `v2026-10-02.3`).
+- **S1 - WIB windows:** weekly/monthly recap windows and the summary
+  route compute their ranges in WIB (Asia/Jakarta), not server time;
+  recap labels say exactly what they cover ("7 hari terakhir" /
+  "bulan lalu").
+- **S2 - Settings guard:** the category delete button is disabled while
+  the category has active transactions or a budget (`budget_count` from
+  the categories API, fail-open; the DELETE guard stays the source of
+  truth).
+- **C1/C2 - honest pipeline:** a processing failure sends ONE static
+  honest reply (never a fabricated confirmation, never inviting a
+  duplicate record), a reply-DELIVERY failure only logs, inbound traffic
+  is rate-limited per phone (30 msg/60s, dropped before processing),
+  success logs carry latency + intent/state transitions, phone numbers
+  are redacted (`***<last4>`) in all logs, and `errorHandler` classifies
+  permanent extraction bugs (stop burning retries) vs transient ones.
+- **G - daily nudge (section 2.10):** `POST /internal/recap?period=daily`
+  runs the pure `shouldSendNudge` (0 transactions logged today in WIB +
+  >=4 distinct WIB days in the trailing 7) behind a per-user-per-WIB-day
+  in-memory guard marked only after a successful send, 3s stagger,
+  persona intent `daily_reminder`; `/healthz` gained its own
+  `lastDailyReminderRunAt` so a healthy daily run can never mask a stale
+  weekly recap (dead man's switch stays meaningful).
+- **I - the goal flow never traps:** both `AWAITING_GOAL_*` states apply
+  the Sprint C hand-back rule (any recognized intent re-routes, only
+  'unclear' re-asks), a fresh goal request while a deadline is pending
+  restarts at the target question instead of dating the previous amount,
+  a tampered context without a target goes back to asking instead of
+  writing an unknown-amount goal, and `goal_created` receives the
+  backend-computed `required_monthly` (sections 2.9 + 1.8: the model
+  phrases, never computes).
+- **Section 11.4 gaps closed:** dedupe replay through the REAL pipeline
+  (same `wa_message_id` -> skipped trace, no second row, no second
+  persona call, no state change), tampered-state ownership tests (a
+  foreign `deleteTargetId`/`candidateIds` can never touch another user's
+  rows), goal-flow and nudge pure/runner suites, error-handler, rate
+  limiter, logger redaction, and webhook orchestration tests.
+- **Docs + dead UI:** README status updated; every reference to the
+  never-created `docs/whatsapp-cloud-api-setup.md` repointed at real
+  sources; OPERATIONS documents the daily cron job and health field;
+  SETUP un-bootstrapped (migrations exist, webhook replaces the QR
+  session); `supabase/README.md` lists all 7 migrations; SPEC 4.3 got
+  the doc-only note that `?period=` is unimplemented; ROADMAP Phase E
+  boxes reflect code-complete status (live deploy/e2e still open); the
+  mock notification bell (hardcoded USD data, out of scope) was deleted,
+  the disabled topbar search now deep-links to the Transactions page's
+  real `q` filter, and the auth-flow example copy uses rupiah.
+- **Verification:** backend unit 724/724 (66 added in this pass),
+  integration 25/25 (real DB), golden 15/15 (extraction prompt
+  untouched, re-run per 12.3), `test:intent` 8/9 (the 1 failure is the
+  pre-existing `woy pagi` -> rule-router leak, report-only, baseline
+  unchanged), backend lint 0 errors 0 warnings, frontend `tsc --noEmit` +
+  `next lint` + `next build` clean. Migrations unchanged: 7/7, no new
+  schema - the nudge guard is in-memory by design.
 
 ### After Sprint E
 

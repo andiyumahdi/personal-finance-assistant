@@ -1,7 +1,7 @@
 // Static privacy policy content, served at GET /privacy-policy. This
 // exists specifically to satisfy Meta's App Publish requirement (a
 // Privacy Policy URL is mandatory before an app can be published,
-// regardless of app size) - see docs/whatsapp-cloud-api-setup.md.
+// regardless of app size).
 //
 // Kept honest and proportionate to what this project actually is: a
 // personal, non-commercial WhatsApp finance tracker for the developer and

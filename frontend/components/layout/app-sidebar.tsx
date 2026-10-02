@@ -158,7 +158,7 @@ export function AppSidebar() {
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => router.push('/settings')}>
+            <DropdownMenuItem onClick={() => router.push('/dashboard/settings')}>
               <Settings className="h-4 w-4" />
               Settings
             </DropdownMenuItem>

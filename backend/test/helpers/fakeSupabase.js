@@ -105,8 +105,26 @@ function matchesFilter(row, filter) {
     case 'lt':
       return value !== null && value !== undefined && String(value) < String(filter.val);
     case 'ilike': {
-      const needle = String(filter.pattern).replaceAll('%', '').toLowerCase();
-      return typeof value === 'string' && value.toLowerCase().includes(needle);
+      // Faithful LIKE semantics: '%' -> any run, '_' -> one char,
+      // backslash escapes the next character (matching Postgres, where
+      // listTransactions' escapeIlike() output lands). Anchored ^...$ -
+      // the query layer wraps the needle in %...% itself.
+      const source = String(filter.pattern);
+      let re = '';
+      for (let i = 0; i < source.length; i += 1) {
+        const ch = source[i];
+        if (ch === '\\' && i + 1 < source.length) {
+          re += source[i + 1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          i += 1;
+        } else if (ch === '%') {
+          re += '[\\s\\S]*';
+        } else if (ch === '_') {
+          re += '[\\s\\S]';
+        } else {
+          re += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+      }
+      return typeof value === 'string' && new RegExp(`^${re}$`, 'i').test(value);
     }
     default:
       throw new Error(`fakeSupabase: unsupported filter type: ${filter.type}`);

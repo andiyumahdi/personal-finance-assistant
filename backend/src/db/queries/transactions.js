@@ -17,6 +17,18 @@ function assertUserScope(userId, fnName) {
   }
 }
 
+/**
+ * Escapes LIKE/ILIKE metacharacters so user-supplied search text matches
+ * LITERALLY: without this, "100%" matches every row (and `_` matches any
+ * single character), which silently corrupts the chat flow's search results
+ * and - worse - the delete/edit CANDIDATE lists that pick which row a
+ * "ya"/"2" confirmation acts on. Backslash escaped first (it is LIKE's own
+ * escape character). Exported for test/unit coverage.
+ */
+export function escapeIlike(value) {
+  return String(value).replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 export async function insertTransaction(data) {
   const supabase = getSupabaseClient();
   const { data: row, error } = await supabase
@@ -55,6 +67,7 @@ export async function getTransactionById(id, userId) {
  * Always scoped to userId (read-only SELECT).
  */
 export async function listTransactions(userId, filters = {}) {
+  assertUserScope(userId, 'listTransactions');
   const supabase = getSupabaseClient();
   let query = supabase.from('transactions').select('*').eq('user_id', userId);
 
@@ -65,7 +78,7 @@ export async function listTransactions(userId, filters = {}) {
   if (filters.to) query = query.lte('created_at', filters.to);
   if (filters.category) query = query.eq('category', filters.category);
   if (filters.type) query = query.eq('type', filters.type);
-  if (filters.search) query = query.ilike('raw_text', `%${filters.search}%`);
+  if (filters.search) query = query.ilike('raw_text', `%${escapeIlike(filters.search)}%`);
 
   query = query.order('created_at', { ascending: false });
 

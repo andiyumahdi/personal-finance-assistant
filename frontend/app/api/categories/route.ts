@@ -23,7 +23,9 @@ import {
  * Every entry carries active_transaction_count, computed as an AGGREGATE
  * from one extra query (the user's active transaction labels, grouped in
  * memory here) - deliberately not one count query per category (N+1).
- * Two queries total, regardless of how many categories exist.
+ * It also carries budget_count (Sprint D5's second delete blocker), from
+ * one budgets query grouped the same way. Three queries total, regardless
+ * of how many categories exist.
  */
 export async function GET() {
   const session = await auth();
@@ -61,18 +63,34 @@ export async function GET() {
     counts.set(row.category, (counts.get(row.category) ?? 0) + 1);
   }
 
+  // Budget usage per category name - the DELETE endpoint also rejects on
+  // this (Sprint D5's second 409 blocker), so the Settings list needs it
+  // to disable the delete button up front. Enrichment only: a failure
+  // here leaves budget_count at 0 rather than failing the whole read -
+  // the server-side DELETE guard still enforces the real rule.
+  const budgetCounts = new Map<string, number>();
+  const { data: budgetRows } = await supabase
+    .from('budgets')
+    .select('category')
+    .eq('user_id', session.user.id);
+  for (const row of budgetRows ?? []) {
+    budgetCounts.set(row.category, (budgetCounts.get(row.category) ?? 0) + 1);
+  }
+
   const categories: CategoryEntry[] = [
     ...CATEGORIES.map((name) => ({
       id: null,
       name,
       is_default: true,
       active_transaction_count: counts.get(name) ?? 0,
+      budget_count: budgetCounts.get(name) ?? 0,
     })),
     ...(custom ?? []).map((row) => ({
       id: row.id,
       name: row.name,
       is_default: false,
       active_transaction_count: counts.get(row.name) ?? 0,
+      budget_count: budgetCounts.get(row.name) ?? 0,
       created_at: row.created_at,
     })),
   ];

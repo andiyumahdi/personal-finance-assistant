@@ -5,7 +5,10 @@ import {
   handleWebhookVerification,
   verifyWebhookSignature,
   extractMessages,
+  handleWebhookMessage,
+  PIPELINE_ERROR_REPLY,
 } from '../../src/whatsapp/webhook.js';
+import { createRateLimiter } from '../../src/utils/rateLimit.js';
 
 describe('handleWebhookVerification (pure, no network)', () => {
   const originalToken = process.env.WHATSAPP_VERIFY_TOKEN;
@@ -135,5 +138,157 @@ describe('extractMessages (pure, no network)', () => {
   test('returns an empty array for a malformed/empty payload', () => {
     assert.deepEqual(extractMessages({}), []);
     assert.deepEqual(extractMessages({ entry: [] }), []);
+  });
+});
+
+describe('handleWebhookMessage (pipeline orchestration, injected fakes)', () => {
+  const originalSecret = process.env.WHATSAPP_APP_SECRET;
+  const testSecret = 'test-app-secret';
+  const PHONE = '6281234567890';
+
+  beforeEach(() => {
+    process.env.WHATSAPP_APP_SECRET = testSecret;
+  });
+
+  afterEach(() => {
+    process.env.WHATSAPP_APP_SECRET = originalSecret;
+  });
+
+  function sign(body) {
+    return 'sha256=' + crypto.createHmac('sha256', testSecret).update(body).digest('hex');
+  }
+
+  function buildRequest(id = 'wamid.TEST') {
+    const parsed = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  { from: PHONE, id, type: 'text', text: { body: 'jajan 25rb' } },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const rawBody = JSON.stringify(parsed);
+    return { rawBody, signature: sign(rawBody), parsed };
+  }
+
+  async function run(deps, id) {
+    const { rawBody, signature, parsed } = buildRequest(id);
+    return handleWebhookMessage(rawBody, signature, parsed, {
+      rateLimiter: createRateLimiter({ max: 10, windowMs: 60_000 }),
+      ...deps,
+    });
+  }
+
+  test('processing failure replies with the honest static error message and still answers 200', async () => {
+    const sent = [];
+    const result = await run({
+      handleIncomingMessage: async () => {
+        throw new Error('gemini down');
+      },
+      sendMessage: async (phone, text) => {
+        sent.push({ phone, text });
+      },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].phone, PHONE);
+    assert.equal(sent[0].text, PIPELINE_ERROR_REPLY);
+  });
+
+  test('the honest-error reply itself failing never rethrows (batch survival)', async () => {
+    const result = await run({
+      handleIncomingMessage: async () => {
+        throw new Error('db down');
+      },
+      sendMessage: async () => {
+        throw new Error('meta down');
+      },
+    });
+    assert.equal(result.status, 200);
+  });
+
+  test('a duplicate (trace.skipped) is not answered twice', async () => {
+    const sent = [];
+    const result = await run({
+      handleIncomingMessage: async () => ({ skipped: 'duplicate_message' }),
+      sendMessage: async (phone, text) => {
+        sent.push({ phone, text });
+      },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(sent.length, 0);
+  });
+
+  test('success path delivers exactly the trace reply', async () => {
+    const sent = [];
+    const result = await run({
+      handleIncomingMessage: async () => ({
+        reply: 'Oke, dicatat ya ✌️',
+        stateBefore: 'IDLE',
+        stateAfter: 'IDLE',
+        intent: 'transaction',
+      }),
+      sendMessage: async (phone, text) => {
+        sent.push({ phone, text });
+      },
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(sent, [{ phone: PHONE, text: 'Oke, dicatat ya ✌️' }]);
+  });
+
+  test('a failed REPLY delivery does not fire the error reply (record succeeded - no duplicate invite)', async () => {
+    const sent = [];
+    const result = await run({
+      handleIncomingMessage: async () => ({ reply: 'done', stateBefore: 'IDLE', stateAfter: 'IDLE' }),
+      sendMessage: async () => {
+        throw new Error('send failed');
+      },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(sent.length, 0);
+  });
+
+  test('over the per-phone rate limit the pipeline is never invoked', async () => {
+    let called = 0;
+    const deps = {
+      handleIncomingMessage: async () => {
+        called += 1;
+        return { reply: 'hi' };
+      },
+      sendMessage: async () => {},
+      rateLimiter: createRateLimiter({ max: 1, windowMs: 60_000 }),
+    };
+
+    const first = buildRequest('wamid.FLOOD');
+    const ok = await handleWebhookMessage(first.rawBody, first.signature, first.parsed, deps);
+    assert.equal(ok.status, 200);
+    assert.equal(called, 1); // allowed through
+
+    const second = buildRequest('wamid.FLOOD2');
+    const dropped = await handleWebhookMessage(second.rawBody, second.signature, second.parsed, deps);
+    assert.equal(dropped.status, 200); // dropped silently, still acked to Meta
+    assert.equal(called, 1); // pipeline NOT invoked again
+  });
+
+  test('signature failure rejects before any rate-limiter or pipeline work', async () => {
+    const { rawBody, parsed } = buildRequest('wamid.BADSIG');
+    const result = await handleWebhookMessage(rawBody, 'sha256=deadbeef', parsed, {
+      handleIncomingMessage: async () => {
+        throw new Error('must not run');
+      },
+      sendMessage: async () => {
+        throw new Error('must not run');
+      },
+      rateLimiter: createRateLimiter({ max: 1, windowMs: 60_000 }),
+    });
+    assert.equal(result.status, 401);
   });
 });

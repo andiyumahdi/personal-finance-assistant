@@ -4,8 +4,7 @@
 // Replaces the Baileys-based sender. The old Baileys client
 // (src/whatsapp/client.js) and its session (auth_state/) remain in the
 // codebase as deprecated, not deleted, until this Cloud API path is
-// confirmed stable in real use - see docs/whatsapp-cloud-api-setup.md
-// "Baileys Cleanup".
+// confirmed stable in real use (tracked in docs/ROADMAP.md).
 
 import { logger } from '../utils/logger.js';
 

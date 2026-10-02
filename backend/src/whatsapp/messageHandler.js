@@ -2827,6 +2827,15 @@ async function handleAwaitingDirection(user, rawText, trace) {
 }
 
 async function handleAwaitingGoalTarget(user, rawText, trace) {
+  // Hand-back FIRST, same rule as the other AWAITING_* handlers (Sprint
+  // C): "jajan 20rb" while a goal is pending must record a transaction,
+  // never become the goal's target - only 'unclear' and this flow's own
+  // intent stay. Bare answers like "20 juta" start with a digit, so
+  // looksLikeTargetReply keeps them in-flow (see shouldHandBackToRouter).
+  if (shouldHandBackToRouter(rawText, 'goal_start')) {
+    return handleIdle(user, rawText, trace);
+  }
+
   const amount = parseAmount(rawText);
   trace.parsedAmount = amount;
 
@@ -2850,6 +2859,13 @@ async function handleAwaitingGoalDeadline(user, rawText, trace) {
   trace.parsedDeadline = deadline;
 
   if (!deadline) {
+    // A FRESH goal request restarts the flow from the router (it re-asks
+    // the target) instead of being dated against the PREVIOUS goal's
+    // amount; any other recognized intent hands back the same way as the
+    // other AWAITING_* states; only 'unclear' re-asks the date.
+    if (detectIntent(rawText) === 'goal_start' || shouldHandBackToRouter(rawText, 'goal_start')) {
+      return handleIdle(user, rawText, trace);
+    }
     return {
       reply: 'Hmm, tanggalnya belum pas nih. Coba bilang kayak "31 Desember 2026" ya',
       newState: STATES.AWAITING_GOAL_DEADLINE,
@@ -2858,6 +2874,17 @@ async function handleAwaitingGoalDeadline(user, rawText, trace) {
   }
 
   const targetAmount = user.state_context?.targetAmount;
+  // Defensive: state_context without a usable target can only come from
+  // tampering/corruption - creating a goal with an unknown amount would
+  // write garbage the user can never verify. Go back and ask for it.
+  if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
+    return {
+      reply: 'Eh, targetnya tadi belum kecatat. Target berapa ya?',
+      newState: STATES.AWAITING_GOAL_TARGET,
+      newStateContext: {},
+    };
+  }
+
   const goal = await goalsDomain.createGoal(user.id, {
     title: 'Goal baru',
     target_amount: targetAmount,
@@ -2865,9 +2892,19 @@ async function handleAwaitingGoalDeadline(user, rawText, trace) {
   });
   trace.dbAction = { type: 'insert_goal', goal };
 
+  // SPECIFICATION.md section 2.9: the backend computes the required
+  // monthly saving and the persona confirms it - pure math stays here
+  // (section 1.8: the model never computes numbers).
+  const requiredMonthly = goalsDomain.computeRequiredMonthlySaving(
+    goal.target_amount,
+    goal.deadline,
+  );
+  trace.requiredMonthlySaving = requiredMonthly;
+
   const persona = await aiProvider.generateReply('goal_created', {
     target_amount: goal.target_amount,
     deadline: goal.deadline,
+    required_monthly: requiredMonthly,
   });
   trace.persona = persona;
 

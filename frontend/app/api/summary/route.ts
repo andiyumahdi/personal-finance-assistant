@@ -13,6 +13,7 @@ import {
   groupByMonth,
   isSameMonth,
 } from '@/lib/summary';
+import { WIB_OFFSET_MS } from '@/lib/budgets';
 import type { Transaction } from '@/lib/types';
 
 export async function GET() {
@@ -35,7 +36,12 @@ export async function GET() {
 
   const transactions = (data ?? []) as Transaction[];
   const now = new Date();
-  const lastMonthRef = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  // "This month"/"last month" in WIB - the same calendar the budgets card
+  // uses (lib/budgets monthRange), so the KPIs and the budget progress can
+  // never disagree about which month it is (server-local getMonth() did,
+  // for the first 7 hours of every month on a UTC host).
+  const nowShifted = new Date(now.getTime() + WIB_OFFSET_MS);
+  const lastMonthRef = new Date(Date.UTC(nowShifted.getUTCFullYear(), nowShifted.getUTCMonth() - 1, 1));
 
   const thisMonthTx = transactions.filter((tx) => isSameMonth(tx.created_at, now));
   const lastMonthTx = transactions.filter((tx) => isSameMonth(tx.created_at, lastMonthRef));

@@ -55,30 +55,37 @@ Follow immediately if any credential is suspected leaked:
 |---|---|---|
 | — | — | (none yet) |
 
-## Scheduled recaps
+## Scheduled jobs (recaps + daily nudge)
 
-Weekly and monthly recaps are triggered externally, not by an in-process
-timer (node-cron) - Render's free tier can sleep, so an internal timer
-isn't reliable, and an external trigger conveniently wakes the service too.
+Weekly/monthly recaps and the daily idle nudge are triggered externally,
+not by an in-process timer (node-cron) - Render's free tier can sleep, so
+an internal timer isn't reliable, and an external trigger conveniently
+wakes the service too.
 
 Setup (using a free service like cron-job.org, or any scheduler that can
 send an HTTP request with a custom header):
 
 1. Set `INTERNAL_CRON_SECRET` in the backend's environment variables (see
    `.env.example` for how to generate one).
-2. Create two scheduled jobs pointing at your deployed backend:
+2. Create three scheduled jobs pointing at your deployed backend:
+   - **Daily nudge**: `POST https://<your-backend>/internal/recap?period=daily`
+     - Suggested schedule: every day, 20:00 WIB — late enough that "no
+       transaction logged today" is meaningful; at most one soft nudge per
+       user per day, and only for users who habitually log daily
    - **Weekly**: `POST https://<your-backend>/internal/recap?period=weekly`
      - Suggested schedule: every Monday, 08:00 WIB
    - **Monthly**: `POST https://<your-backend>/internal/recap?period=monthly`
      - Suggested schedule: 1st of each month, 08:00 WIB
-3. Both requests must include the header `X-Internal-Secret: <the same value as INTERNAL_CRON_SECRET>`.
+3. All requests must include the header `X-Internal-Secret: <the same value as INTERNAL_CRON_SECRET>`.
 
 Each run returns a JSON summary (`{ sent, skipped, failed, completedAt }`)
-- `skipped` counts users with no transactions in the period (they aren't
-  sent an empty "you spent Rp0" message). `GET /healthz` also reports
-  `lastRecapRunAt` - if that timestamp goes stale past when a recap was
-  expected, the cron trigger itself has silently stopped firing (dead
-  man's switch, section 11.3).
+- for a recap, `skipped` counts users with no transactions in the period
+  (they aren't sent an empty "you spent Rp0" message); for the daily run,
+  `skipped` counts users who already logged today or already got nudged.
+  `GET /healthz` reports `lastRecapRunAt` (weekly/monthly) and
+  `lastDailyReminderRunAt` (daily) - if a timestamp goes stale past when
+  its job was expected, the cron trigger itself has silently stopped
+  firing (dead man's switch, section 11.3).
 
 ## Migration policy
 

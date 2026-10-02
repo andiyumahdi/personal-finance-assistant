@@ -1,6 +1,5 @@
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ThemeToggle } from "./theme-toggle";
-import { NotificationCenter } from "./notification-center";
 import { UserMenu } from "./user-menu";
 import { GlobalSearch } from "./global-search";
 
@@ -18,7 +17,6 @@ export function Topbar({ title, subtitle }: { title: string; subtitle?: string }
       </div>
       <GlobalSearch />
       <div className="flex items-center gap-1">
-        <NotificationCenter />
         <ThemeToggle />
         <UserMenu />
       </div>

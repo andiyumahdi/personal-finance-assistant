@@ -20,7 +20,8 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 
 - **Catat transaksi:** langsung chat aja, contoh "jajan 20rb" atau "gaji bulan ini 5jt". Nggak perlu format khusus.
 - **Minta rekap:** ketik "rekap" atau "habis berapa minggu ini". Rekap juga otomatis dikirim tiap Senin (mingguan) dan tanggal 1 (bulanan) kalau ada transaksi di periode itu.
-- **Bikin goal:** ketik sesuatu kayak "mau nabung buat laptop", nanti Nera nanya target nominal dan tanggalnya.
+- **Pengingat harian:** kalau hari itu kamu belum catat apa pun padahal biasanya rajin, Nera kirim satu pesan lembut sekali sehari — nggak diulang-ulang, dan nggak dikirim ke yang biasanya jarang catat.
+- **Bikin goal:** ketik sesuatu kayak "mau nabung buat laptop", nanti Nera nanya target nominal dan tanggalnya, terus langsung ngitungin berapa yang harus disisihin tiap bulan biar keburu.
 - **Ubah/hapus transaksi:** tinggal bilang, misal "yang 20rb tadi jadi 25rb" (ubah) atau "hapus yang 20rb" — Nera minta konfirmasi dulu sebelum beneran dihapus. Salah hapus? Ketik "undo" buat balikin transaksi terakhir.
 - **Cari riwayat transaksi:** ketik "cari transaksi makan" atau "cari pengeluaran 20rb", hasilnya maksimal 5 transaksi.
 - **Kelola dompet:** ketik "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri", atau "hapus dompet OVO" — bisa juga lewat dashboard **Settings → Wallets** (detail di bagian **11. Dompet**).
@@ -39,6 +40,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - Kalau nominal nggak disebutkan (misal "bayar netflix" tanpa angka), Nera nanya nominalnya
 - Edit transaksi lewat chat, misal "yang 20rb tadi jadi 25rb" atau "ubah kategorinya jadi makanan" — Nera nanya dulu kalau transaksinya yang dimaksud nggak jelas
 - Hapus transaksi lewat chat, misal "hapus yang 20rb" — selalu minta konfirmasi "ya"/"batal" dulu, nggak pernah langsung hapus
+- Edit dan hapus transaksi dari dashboard (halaman Transaksi): ubah nominal/kategori/tipe, atau hapus dengan konfirmasi — riwayat yang dihapus tetap tersimpan (soft-delete) dan "undo" di chat tetap bisa balikin (detail di bagian **7. Dashboard**)
 - Cari riwayat transaksi lewat chat, misal "cari transaksi makan" atau "cari pengeluaran 20rb" — hasil maksimal 5 transaksi
 - Undo transaksi terakhir yang dihapus ("undo" atau "balikin transaksi tadi") — cuma transaksi yang barusan dihapus aja yang bisa dibalikin
 - Kelola kategori lewat chat ("buat kategori …", "ganti nama kategori … jadi …", "hapus kategori …") — detail lengkap di bagian **4. Kategori**
@@ -71,6 +73,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 **Bisa:**
 - Minta rekap kapan aja lewat chat — selain total pemasukan/pengeluaran/saldo sejauh ini, rekap minta (on-demand) juga bawa analisis bulan berjalan: tren pengeluaran vs bulan lalu, kategori terbesar, prediksi progress goal aktif, dan satu saran (misal budget yang udah lewat) — semua angka dihitung backend, Nera cuma nyampein
 - Rekap otomatis mingguan (Senin) dan bulanan (tanggal 1) — dikirim cuma kalau ada transaksi di periode itu, isinya total pemasukan, pengeluaran, dan saldo (net) periode itu
+- Pengingat harian (bukan rekap, nggak bawa angka): kalau hari itu belum ada transaksi kamu padahal biasanya catat tiap hari, Nera kirim satu pesan lembut — sekali sehari, nggak diulang-ulang, dan nggak buat kamu yang biasanya jarang catat
 
 **Belum tersedia saat ini:**
 - Rekap custom per rentang tanggal tertentu
@@ -80,6 +83,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 
 **Bisa:**
 - Bikin goal baru lewat chat
+- Begitu goal dibikin, backend langsung ngitung tabungan per bulan yang perlu disisihin biar keburu deadline, dan Nera konfirmasiin angkanya (angka dihitung backend, bukan Nera)
 - Progress goal (persentase, sisa target) otomatis update tiap ada kontribusi
 - Goal otomatis jadi "tercapai" begitu target ketemu
 - Lihat, edit, dan tambah kontribusi ke goal lewat dashboard
@@ -98,6 +102,7 @@ transaksi, analisis, dan progress target.
 - Lihat ringkasan keuangan bulan ini dan progress dibanding bulan lalu
 - Lihat tren keuangan beberapa bulan terakhir dalam bentuk grafik
 - Cari dan filter semua transaksi yang pernah tercatat
+- Edit transaksi dari halaman Transaksi (ubah nominal, kategori, tipe) dan hapusnya (dengan konfirmasi, soft-delete) — "undo" di chat tetap bisa balikin transaksi terakhir yang dihapus
 - Lihat ke mana aja uang paling banyak kepakai
 - Kelola goals (bikin, edit, tambah kontribusi)
 - Atur tampilan (mode terang/gelap)
@@ -105,7 +110,7 @@ transaksi, analisis, dan progress target.
 - Pantau budget bulanan per kategori di kartu **Budget**: tiap kategori menampilkan berapa terpakai vs target bulan ini plus persentasenya (lebih dari 100% tampil merah) — kelola budget-nya lewat chat (detail di bagian **12. Budget**)
 
 **Belum tersedia saat ini:**
-- Tambah/edit transaksi manual dari dashboard (transaksi cuma bisa lewat WhatsApp, itu memang prinsip desainnya — lihat bagian 9)
+- Tambah transaksi baru dari dashboard (pencatatan tetap lewat WhatsApp, itu memang prinsip desainnya — lihat bagian 9; edit dan hapusnya sendiri sudah bisa dari halaman Transaksi)
 - Export data
 - Filter berdasarkan dompet di halaman Transaksi (kolomnya ada, filternya belum)
 - Tambah/ubah/hapus budget dari dashboard (kartu Budget tampilan baca — kelola lewat chat)
@@ -130,7 +135,7 @@ transaksi, analisis, dan progress target.
 Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan improvisasi.
 
 - **Kenapa login harus lewat WhatsApp dulu, bukan langsung Google?** Karena nomor WhatsApp itu identitas utama di Nera — dashboard cuma pelengkap. Ini juga jadi lapisan keamanan, biar nggak sembarang akun Google bisa nyambung ke data siapa pun.
-- **Kenapa transaksi cuma bisa dicatat lewat WhatsApp, bukan dashboard?** Biar secepat dan senatural mungkin — tinggal chat, nggak perlu buka app dan isi form.
+- **Kenapa mencatat transaksi cuma lewat WhatsApp, bukan lewat form dashboard?** Biar secepat dan senatural mungkin — tinggal chat, nggak perlu buka app dan isi form. (Edit dan hapus transaksinya sendiri tetap tersedia di halaman Transaksi dashboard.)
 - **Kenapa nggak ada command khusus?** Karena Nera didesain buat dipakai dengan bahasa sehari-hari, bukan command teknis.
 
 ## 10. FAQ Operasional
@@ -139,7 +144,7 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 - **Data aku aman nggak?** Aman — data kamu cuma bisa diakses lewat akun kamu sendiri, nggak bisa dilihat orang lain.
 - **Data aku disimpan di mana?** Disimpan online, jadi tetap ada dan bisa diakses walaupun kamu ganti perangkat — asal lewat akun yang sudah tersambung.
 - **Kalau internet mati apakah masih bisa dipakai?** Nera jalan lewat WhatsApp dan dashboard online, jadi tetap butuh koneksi internet.
-- **Kalau aku salah catat gimana?** Kalau baru aja, bisa dikoreksi langsung di chat ("eh salah, yang tadi 15rb"). Kalau transaksinya udah lama juga bisa — bilang "yang 20rb tadi jadi 25rb" buat ngedit, atau "hapus yang 20rb" buat hapus (Nera minta konfirmasi dulu). Salah hapus? Ketik "undo" selama belum ada transaksi lain yang dihapus sesudahnya (lihat bagian 3).
+- **Kalau aku salah catat gimana?** Kalau baru aja, bisa dikoreksi langsung di chat ("eh salah, yang tadi 15rb"). Kalau transaksinya udah lama juga bisa — bilang "yang 20rb tadi jadi 25rb" buat ngedit, atau "hapus yang 20rb" buat hapus (Nera minta konfirmasi dulu); edit dan hapus juga bisa dari halaman Transaksi di dashboard. Salah hapus? Ketik "undo" selama belum ada transaksi lain yang dihapus sesudahnya (lihat bagian 3).
 - **Kalau aku ganti HP gimana?** Nggak masalah, karena datanya nggak nyimpen di HP — tinggal lanjut chat dari nomor WhatsApp yang sama seperti biasa.
 - **Kalau aku ganti akun Google gimana?** Untuk sekarang belum ada mekanisme buat ganti/sambungin ulang ke akun Google lain — nomor WhatsApp kamu tetap tersambung ke akun Google yang pertama kali dipakai.
 
@@ -195,6 +200,6 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 Sprint C shipped (edit / hapus / cari / undo transaksi lewat chat, all
 cross-checked against implemented code), then synced after Sprint D1
 (category management) and Sprint D2 (wallet management: chat +
-Settings → Wallets, section 11) shipped, then after Sprint D3 (budget: chat commands + the read-only Budgets card, section 12), then after Sprint D4 (transfer antar dompet: chat command + display-only di dashboard, section 11 — moved from "Belum tersedia" to "Bisa"). Any future product change (new
+Settings → Wallets, section 11) shipped, then after Sprint D3 (budget: chat commands + the read-only Budgets card, section 12), then after Sprint D4 (transfer antar dompet: chat command + display-only di dashboard, section 11 — moved from "Belum tersedia" to "Bisa"), then during MVP finalization (dashboard edit/hapus transaksi, sections 3/7/9; pengingat harian, sections 2/5; goal required-monthly saving, sections 2/6 — all cross-checked against implemented code). Any future product change (new
 feature, changed behavior) should update this file first, then the
 prompt that's grounded in it — not the other way around.

@@ -72,12 +72,19 @@ export function validateCategoryName(raw: unknown): CategoryNameValidation {
  * first (in config order - they have no row, so id is null), then the
  * user's custom rows in creation order. active_transaction_count counts
  * ACTIVE transactions only (deleted_at IS NULL) - soft-deleted history
- * neither blocks anything nor surfaces here.
+ * neither blocks anything nor surfaces here. budget_count (MVP
+ * finalization) counts budgets using this category name - the second
+ * blocker the DELETE 409 can report (Sprint D5), so the Settings UI can
+ * disable the delete button BEFORE the user clicks it instead of showing
+ * a post-hoc error. Optional because the route treats it as enrichment:
+ * if that aggregate query fails, everything else still works and the
+ * server-side DELETE guard remains the source of truth.
  */
 export type CategoryEntry = {
   id: string | null;
   name: string;
   is_default: boolean;
   active_transaction_count: number;
+  budget_count?: number;
   created_at?: string;
 };

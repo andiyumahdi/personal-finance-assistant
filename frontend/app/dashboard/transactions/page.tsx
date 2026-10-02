@@ -66,6 +66,14 @@ export default function TransactionsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSearch, type, category]);
 
+  // The topbar quick-search deep-links here with ?q=...; adopt it once on
+  // mount (one-shot window.location read - no useSearchParams/Suspense
+  // ceremony) so the search input and the fetched list agree with the URL.
+  useEffect(() => {
+    const initial = new URLSearchParams(window.location.search).get('q');
+    if (initial) setSearch(initial);
+  }, []);
+
   useEffect(() => {
     fetch('/api/categories')
       .then((res) => (res.ok ? res.json() : null))
@@ -166,7 +174,12 @@ export default function TransactionsPage() {
             }
           />
         ) : (
-          <TransactionsTable items={items} walletNames={walletNames} />
+          <TransactionsTable
+            items={items}
+            walletNames={walletNames}
+            categoryOptions={categoryOptions}
+            onChanged={load}
+          />
         )}
       </div>
     </AppLayout>

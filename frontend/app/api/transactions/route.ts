@@ -7,6 +7,16 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
 
+/**
+ * Escapes the LIKE/ILIKE metacharacters in a user-supplied search string
+ * so `%` and `_` are matched literally: without this a query of "100%"
+ * matches EVERYTHING (over-match), which in the chat flow feeds wrong
+ * delete/edit candidate lists. Backslash must be escaped first.
+ */
+function escapeIlike(value: string) {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 export async function GET(request: Request) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -14,9 +24,22 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const q = searchParams.get('q');
+  // SPECIFICATION.md section 4.2 names the param `search`; `q` is what the
+  // dashboard has always sent - both are accepted.
+  const q = searchParams.get('q') ?? searchParams.get('search');
   const type = searchParams.get('type');
   const category = searchParams.get('category');
+  const from = searchParams.get('from');
+  const to = searchParams.get('to');
+
+  for (const [name, value] of [
+    ['from', from],
+    ['to', to],
+  ] as const) {
+    if (value !== null && Number.isNaN(new Date(value).getTime())) {
+      return NextResponse.json({ error: `invalid_${name}` }, { status: 400 });
+    }
+  }
 
   const supabase = getSupabaseAdminClient();
   let query = supabase
@@ -28,7 +51,9 @@ export async function GET(request: Request) {
 
   if (type && type !== 'all') query = query.eq('type', type);
   if (category && category !== 'all') query = query.eq('category', category);
-  if (q) query = query.ilike('raw_text', `%${q}%`);
+  if (from) query = query.gte('created_at', from);
+  if (to) query = query.lte('created_at', to);
+  if (q) query = query.ilike('raw_text', `%${escapeIlike(q)}%`);
 
   const { data, error } = await query;
 

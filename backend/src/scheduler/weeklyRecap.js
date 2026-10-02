@@ -25,7 +25,11 @@ export async function runWeeklyRecap() {
 
   return runRecapForAllUsers({
     intent: 'weekly_recap',
-    periodLabel: 'minggu ini',
+    // The window is rolling 7 days ending NOW (section 2.8), not the
+    // calendar week - so the label says exactly that instead of "minggu
+    // ini", which at a Monday-morning send would misattribute most of the
+    // numbers to a week that began hours ago.
+    periodLabel: '7 hari terakhir',
     from,
     to,
   });

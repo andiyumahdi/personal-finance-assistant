@@ -9,8 +9,8 @@ have already been made separately — this document covers local dev only.
 - Node.js (LTS)
 - A Supabase project (free tier)
 - A Gemini API key
-- A WhatsApp number available for Baileys to connect to (can be a
-  secondary/test number during development)
+- A WhatsApp number plus a Meta developer app for the WhatsApp Cloud API
+  (the bot is webhook-based — no QR/Baileys session is needed)
 - A Google Cloud project with OAuth credentials (for the dashboard login)
 
 ## 1. Clone and install
@@ -43,13 +43,17 @@ for.
 
 ## 3. Database
 
-Schema migrations are not yet created (bootstrap stage — see
-`supabase/README.md`). Once migrations exist:
+Schema migrations live in `supabase/migrations/` (7 to date — see
+`supabase/README.md` for what each one does). For a FRESH Supabase
+project, apply them with the pinned CLI:
 
 ```bash
 cd supabase
-supabase db push
+npx supabase@2.109.1 db push
 ```
+
+Never edit a migration that has already been applied — add a new one
+instead (`SPECIFICATION.md` section 12.4).
 
 ## 4. Run locally
 
@@ -65,16 +69,20 @@ cd frontend
 npm run dev
 ```
 
-## 5. WhatsApp session
+## 5. WhatsApp webhook (Cloud API)
 
-On first run, the backend will need a QR code scan to establish the
-Baileys session (once `connectWhatsApp()` is implemented). The session is
-saved to `backend/auth_state/` and must persist across restarts — see
-`OPERATIONS.md`.
+The backend exposes `GET /webhook` (Meta's verification handshake, driven
+by `WHATSAPP_VERIFY_TOKEN`) and `POST /webhook` (messages, signature-
+validated with `WHATSAPP_APP_SECRET` before anything else). Fill both
+into `backend/.env` — see `SPECIFICATION.md` section 9. To test against
+Meta from localhost, expose the backend through any HTTPS tunnel (e.g.
+ngrok) and point the Meta App's webhook URL at it; in production the Meta
+App points at the deployed backend URL instead. No QR-code session is
+involved — the legacy Baileys client stays in the codebase as deprecated,
+not wired into the running server.
 
 ## Next steps
 
-This repository is currently a bootstrap only — no business logic is
-implemented. See `SPECIFICATION.md` section 10 for the phase-by-phase
-implementation roadmap, starting with Phase 0 (VM provisioning + stable
-Baileys connection).
+The MVP on the Locked Roadmap is implemented — see the Status section in
+`README.md` and `docs/ROADMAP.md` for the phase-by-phase breakdown and
+exit criteria.

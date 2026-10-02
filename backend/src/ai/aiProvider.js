@@ -3,6 +3,7 @@
 // section 1.5 (vendor lock mitigation).
 
 import { callGemini } from './geminiClient.js';
+import { classifyError, handleError } from '../middlewares/errorHandler.js';
 import {
   EXTRACTION_PROMPT_VERSION,
   EXTRACTION_SYSTEM_INSTRUCTION,
@@ -122,9 +123,25 @@ export const aiProvider = {
         return { ...parsed, prompt_version: EXTRACTION_PROMPT_VERSION };
       }
       lastReason = validation.reason;
+
+      // SPECIFICATION.md section 11.2: malformed JSON is transient and
+      // gets retried above, but an out-of-enum type/category/confidence
+      // is a deterministic LOGIC bug - log it, flag it for review, and
+      // stop instead of burning retries on an identical request.
+      if (classifyError(validation.reason) === 'permanent') {
+        handleError(validation.reason, {
+          stage: 'extraction',
+          attemptsUsed: attempt + 1,
+          flaggedForReview: true,
+        });
+        break;
+      }
     }
 
-    throw new Error(`Extraction failed schema validation after retry: ${lastReason}`);
+    const failureKind = classifyError(lastReason);
+    throw new Error(
+      `Extraction failed schema validation (${failureKind}): ${lastReason}`,
+    );
   },
 
   async generateReply(intent, data) {

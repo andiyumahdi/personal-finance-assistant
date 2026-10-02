@@ -244,6 +244,17 @@ function CategoriesGroup() {
               const rowKey = entry.is_default ? `default-${entry.name}` : entry.id;
               const isEditing = entry.id !== null && editingId === entry.id;
               const count = entry.active_transaction_count;
+              const budgetCount = entry.budget_count ?? 0;
+              const blocked = count > 0 || budgetCount > 0;
+              const blockerLabel = (() => {
+                if (count > 0 && budgetCount > 0) {
+                  return `used by ${count} active transaction${count === 1 ? '' : 's'} and ${budgetCount} budget${budgetCount === 1 ? '' : 's'}`;
+                }
+                if (budgetCount > 0) {
+                  return `used by ${budgetCount} budget${budgetCount === 1 ? '' : 's'}`;
+                }
+                return `used by ${count} active transaction${count === 1 ? '' : 's'}`;
+              })();
               return (
                 <div
                   key={rowKey}
@@ -280,9 +291,13 @@ function CategoriesGroup() {
                           Enter to save · Esc to cancel
                         </p>
                       )
-                    ) : count > 0 ? (
+                    ) : blocked ? (
                       <p className="mt-0.5 text-[11px] text-muted-foreground">
-                        Used by {count} active transaction{count === 1 ? '' : 's'} — delete is
+                        {count > 0 && budgetCount > 0
+                          ? `Used by ${count} active transaction${count === 1 ? '' : 's'} and ${budgetCount} budget${budgetCount === 1 ? '' : 's'} — delete is`
+                          : budgetCount > 0
+                            ? `Used by ${budgetCount} budget${budgetCount === 1 ? '' : 's'} — delete is`
+                            : `Used by ${count} active transaction${count === 1 ? '' : 's'} — delete is`}{' '}
                         disabled until none use it
                       </p>
                     ) : null}
@@ -325,11 +340,11 @@ function CategoriesGroup() {
                         variant="ghost"
                         className="h-8 w-8 text-destructive hover:text-destructive"
                         title={
-                          count > 0
-                            ? `Can't delete - used by ${count} active transaction${count === 1 ? '' : 's'}`
+                          blocked
+                            ? `Can't delete - ${blockerLabel}`
                             : `Delete ${entry.name}`
                         }
-                        disabled={count > 0 || busy}
+                        disabled={blocked || busy}
                         onClick={() => {
                           setDeleteError(null);
                           setDeleting(entry);
@@ -363,8 +378,8 @@ function CategoriesGroup() {
                 <AlertDialogTitle>Delete &quot;{deleting?.name ?? ''}&quot;?</AlertDialogTitle>
                 <AlertDialogDescription>
                   This removes the category from your list. Transactions you already deleted keep
-                  their historical label - nothing is rewritten. Active transactions must not use
-                  it, which is why the button is disabled while the count above is above zero.
+                  their historical label - nothing is rewritten. The button above stays disabled
+                  while active transactions or budgets still use it.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

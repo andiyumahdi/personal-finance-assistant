@@ -394,8 +394,41 @@ describe('goals query layer', () => {
   });
 
   test('updateGoalById updates current_saved', async () => {
-    const updated = await goalQueries.updateGoalById(goalId, { current_saved: 1700000 });
+    const updated = await goalQueries.updateGoalById(goalId, testUserId, { current_saved: 1700000 });
     assert.equal(updated.current_saved, 1700000);
+  });
+
+  test('updateGoalById without a userId fails loudly', async () => {
+    await assert.rejects(
+      () => goalQueries.updateGoalById(goalId, undefined, { current_saved: 1 }),
+      /requires a userId/,
+    );
+  });
+
+  test("a foreign goal id is invisible: get/update return null and the owner's row is untouched", async () => {
+    const supabase = (await import('../../src/db/supabaseClient.js')).getSupabaseClient();
+    const foreign = await userQueries.createUser(`TEST-GOAL-F-${Date.now()}`);
+    const foreignGoal = await goalQueries.insertGoal(foreign.id, {
+      title: 'Foreign goal',
+      target_amount: 1000000,
+      deadline: '2026-12-31',
+    });
+
+    try {
+      const seen = await goalQueries.getGoalById(foreignGoal.id, testUserId);
+      assert.equal(seen, null, 'a foreign goal must not be readable');
+
+      const updated = await goalQueries.updateGoalById(foreignGoal.id, testUserId, {
+        current_saved: 999,
+      });
+      assert.equal(updated, null, 'a foreign goal must not be updatable');
+
+      const row = await goalQueries.getGoalById(foreignGoal.id, foreign.id);
+      assert.equal(Number(row.current_saved), 0, "the owner's row must be untouched");
+    } finally {
+      await supabase.from('goals').delete().eq('id', foreignGoal.id);
+      await supabase.from('users').delete().eq('id', foreign.id);
+    }
   });
 
   test('listGoals returns the created goal', async () => {
