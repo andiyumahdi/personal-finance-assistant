@@ -24,6 +24,14 @@
 //      wallet id, so history simply displays the wallet's current name
 //      (no per-row snapshot, by decision).
 //
+// Sprint D4 (Transfer) touches this domain in exactly two places, both
+// additive: the balance/count reducer understands type='transfer'
+// (debit source wallet_id, credit destination to_wallet_id, count at
+// BOTH ends) and findActiveWalletExact is the strict resolve-or-null
+// lookup transfer endpoints use - deliberately NOT the silent
+// default-fallback resolveWallet, because a transfer must never be
+// redirected to a wallet the user didn't name.
+//
 // Everything here is user-scoped: userId is mandatory on every I/O
 // function (asserted inside db/queries/wallets.js).
 
@@ -79,12 +87,20 @@ function hasDuplicateName(rows, name, excludeId = null) {
  *
  *   - balance: income adds, expense subtracts, ACTIVE rows only
  *     (soft-deleted history is excluded); non-finite amounts skipped.
+ *   - transfer (Sprint D4): the row references TWO wallets - it debits
+ *     `wallet_id` (source) and credits `to_wallet_id` (destination) for
+ *     the same amount, ACTIVE rows only, so a transfer nets to zero
+ *     across the user's total while moving money between the endpoints.
  *   - transactionCount: EVERY row that references the wallet, including
- *     soft-deleted ones (decision B counts total references).
+ *     soft-deleted ones (decision B counts total references). A transfer
+ *     counts at BOTH ends.
  *   - NULL wallet_id facts are attributed to the default wallet in the
  *     provided list (decision C read-side fallback).
  *   - Facts referencing a wallet id NOT in the list (another user's, or
- *     deleted) are ignored - scoping already happened in the query.
+ *     deleted) are ignored - scoping already happened in the query. For
+ *     a transfer each endpoint is checked independently (a row can credit
+ *     a listed destination even when its source is foreign/unknown, and
+ *     vice versa).
  *
  * Returns a Map<walletId, { balance, transactionCount }> covering every
  * wallet in `wallets` (zeroes when unused).
@@ -96,6 +112,17 @@ export function computeWalletDetails(wallets, txRows = []) {
   );
 
   for (const row of txRows) {
+    // Sprint D4 transfer: handle the DESTINATION endpoint first so it is
+    // counted even when the source endpoint resolves outside the list.
+    if (row.type === 'transfer' && row.to_wallet_id && details.has(row.to_wallet_id)) {
+      const toEntry = details.get(row.to_wallet_id);
+      toEntry.transactionCount += 1;
+      if (!row.deleted_at) {
+        const transferAmount = Number(row.amount);
+        if (Number.isFinite(transferAmount)) toEntry.balance += transferAmount;
+      }
+    }
+
     const targetId = row.wallet_id ?? defaultWallet?.id ?? null;
     if (targetId === null || !details.has(targetId)) continue;
 
@@ -107,6 +134,7 @@ export function computeWalletDetails(wallets, txRows = []) {
     if (!Number.isFinite(amount)) continue;
     if (row.type === 'income') entry.balance += amount;
     else if (row.type === 'expense') entry.balance -= amount;
+    else if (row.type === 'transfer') entry.balance -= amount;
     // 'unknown' type (impossible: DB CHECK) leaves the balance alone.
   }
   return details;
@@ -340,4 +368,28 @@ export async function resolveWallet(userId, rawName) {
   const defaultWallet = wallets.find((wallet) => wallet.is_default);
   if (defaultWallet) return defaultWallet;
   return ensureDefaultWallet(userId);
+}
+
+/**
+ * Sprint D4: STRICT wallet lookup for a transfer endpoint (domain/
+ * transfers.js). Unlike resolveWallet this is resolve-or-null - a name
+ * that does not exactly match one of the caller's ACTIVE wallets returns
+ * null instead of silently falling back to the default wallet: a
+ * transfer whose endpoint we cannot identify must never be redirected to
+ * some other wallet (the chat handler falls back to the ordinary
+ * recording path instead - see messageHandler handleTransferIntent).
+ * Archived names also return null (decision B: archived = not a choice
+ * for NEW recordings). Never writes, never auto-creates a default.
+ */
+export async function findActiveWalletExact(userId, rawName) {
+  const normalized = normalizeWalletName(rawName);
+  if (normalized === null) return null;
+
+  const wallets = await walletQueries.listUserWallets(userId);
+  const lower = normalized.toLowerCase();
+  return (
+    wallets.find(
+      (wallet) => !wallet.archived_at && wallet.name.toLowerCase() === lower,
+    ) ?? null
+  );
 }

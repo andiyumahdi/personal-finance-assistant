@@ -209,12 +209,16 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   }
 
   // Total reference count: NO deleted_at filter (decision B - soft-
-  // deleted history holds the FK too and blocks the hard delete).
+  // deleted history holds the FK too and blocks the hard delete). Sprint
+  // D4: a transaction references this wallet from EITHER end - source
+  // (wallet_id) or transfer destination (to_wallet_id) - so the count
+  // matches backend/src/db/queries/wallets.js countTransactionsForWallet
+  // (two-end guard, single OR-group query, still user-scoped).
   const { count, error: countError } = await supabase
     .from('transactions')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', session.user.id)
-    .eq('wallet_id', row.id);
+    .or(`wallet_id.eq.${row.id},to_wallet_id.eq.${row.id}`);
 
   if (countError) {
     return NextResponse.json({ error: countError.message }, { status: 500 });

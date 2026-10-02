@@ -40,6 +40,12 @@ const cases = [
   { input: 'mksh byk yaa', expectIntent: 'small_talk' },
   { input: 'kondisi dompet gua gimana ya bulan ini', expectIntent: 'recap' },
   { input: 'pengen mulai nyisihin duit buat liburan', expectIntent: 'goal_start' },
+  // Sprint D4: the new transfer category, as paraphrases the rule-based
+  // grammar gate (verb + "dari" + "ke") deliberately does NOT match -
+  // so a passing result proves the classifier understood "move money
+  // between my own wallets" semantically, not structurally.
+  { input: 'saldo di rekening BRI mau digeser ke OVO dong', expectIntent: 'transfer' },
+  { input: 'gue mau mindahin duit dari tabungan ke dompet digital', expectIntent: 'transfer' },
 ];
 
 describe('intent classifier - paraphrases the rule-based router does NOT catch', () => {

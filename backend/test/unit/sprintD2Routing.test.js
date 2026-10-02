@@ -163,8 +163,8 @@ describe('parseWalletManageMessage (pure parser)', () => {
 });
 
 describe('classifier enum <-> handler map sync (D2 mandate)', () => {
-  test('enum is 16 (D3 added budget_manage) and both sides match exactly', () => {
-    assert.equal(INTENT_CATEGORIES.length, 16);
+  test("enum is 17 (D3 added budget_manage, D4 transfer) and both sides match exactly", () => {
+    assert.equal(INTENT_CATEGORIES.length, 17);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 

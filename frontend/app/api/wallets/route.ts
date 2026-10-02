@@ -21,12 +21,14 @@ import { isValidWalletType, validateWalletName, type WalletEntry } from '@/lib/w
  *
  * Aggregation shape (same decision as GET /api/categories, D1): exactly
  * TWO queries total - one for the wallet rows and ONE facts scan over
- * the user's transactions (wallet_id, type, amount, deleted_at), grouped
- * in memory here. Deliberately not one count/sum query per wallet (N+1).
- * Soft-deleted rows are included in the scan: they keep their reference
- * count (hard-delete guard) but never move the balance; facts with a
- * NULL wallet_id count toward the default wallet (read-side fallback
- * while the write path resolves wallets).
+ * the user's transactions (wallet_id, to_wallet_id, type, amount,
+ * deleted_at), grouped in memory here. Deliberately not one count/sum
+ * query per wallet (N+1). Soft-deleted rows are included in the scan:
+ * they keep their reference count (hard-delete guard) but never move the
+ * balance; facts with a NULL wallet_id count toward the default wallet
+ * (read-side fallback while the write path resolves wallets); Sprint D4
+ * transfer rows debit their source and credit their destination (both
+ * ends count toward the reference count too).
  */
 export async function GET() {
   const session = await auth();
@@ -48,7 +50,7 @@ export async function GET() {
 
   const { data: facts, error: factsError } = await supabase
     .from('transactions')
-    .select('wallet_id, type, amount, deleted_at')
+    .select('wallet_id, to_wallet_id, type, amount, deleted_at')
     .eq('user_id', session.user.id);
 
   if (factsError) {
@@ -62,6 +64,19 @@ export async function GET() {
   );
 
   for (const fact of facts ?? []) {
+    // Sprint D4: a transfer references TWO wallets - handle the
+    // DESTINATION endpoint first so it is counted/credited even when the
+    // source endpoint resolves outside this list (mirrors
+    // backend/src/domain/wallets.js computeWalletDetails exactly).
+    if (fact.type === 'transfer' && fact.to_wallet_id && details.has(fact.to_wallet_id)) {
+      const toEntry = details.get(fact.to_wallet_id)!;
+      toEntry.transaction_count += 1;
+      if (!fact.deleted_at) {
+        const transferAmount = Number(fact.amount);
+        if (Number.isFinite(transferAmount)) toEntry.balance += transferAmount;
+      }
+    }
+
     const targetId = fact.wallet_id ?? defaultWallet?.id ?? null;
     if (targetId === null || !details.has(targetId)) continue;
     const entry = details.get(targetId)!;
@@ -71,6 +86,7 @@ export async function GET() {
     if (!Number.isFinite(amount)) continue;
     if (fact.type === 'income') entry.balance += amount;
     else if (fact.type === 'expense') entry.balance -= amount;
+    else if (fact.type === 'transfer') entry.balance -= amount;
   }
 
   const entries: WalletEntry[] = wallets.map((row) => {

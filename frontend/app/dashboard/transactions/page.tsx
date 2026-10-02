@@ -126,6 +126,10 @@ export default function TransactionsPage() {
               <SelectItem value="all">All types</SelectItem>
               <SelectItem value="income">Income</SelectItem>
               <SelectItem value="expense">Expense</SelectItem>
+              {/* Sprint D4: display-only filter for wallet-to-wallet
+                  transfers (decision F - the dashboard never CREATES
+                  them, SPECIFICATION.md section 1.2). */}
+              <SelectItem value="transfer">Transfer</SelectItem>
             </SelectContent>
           </Select>
           <Select value={category} onValueChange={setCategory}>

@@ -11,7 +11,7 @@
 // extractionPrompt.js, which pulls out full transaction data. This call
 // only answers "what is the user trying to do", nothing more.
 
-export const INTENT_CLASSIFIER_PROMPT_VERSION = 'v2026-10-01.2';
+export const INTENT_CLASSIFIER_PROMPT_VERSION = 'v2026-10-02.1';
 
 // Keep this list in sync with the canonical intent names used by
 // whatsapp/messageHandler.js's INTENT_HANDLERS map - both the rule-based
@@ -35,6 +35,7 @@ export const INTENT_CATEGORIES = [
   'category_manage',
   'wallet_manage',
   'budget_manage',
+  'transfer',
   'unclear',
 ];
 
@@ -55,6 +56,7 @@ Categories and what they mean:
 - "category_manage": the user wants to CREATE, RENAME, or DELETE a transaction CATEGORY in their own category list, e.g. paraphrases of "tambah kategori Kopi", "ganti nama kategori Kopi jadi Kopi Pagi", or "hapus kategori Kopi" - organizing their categories, NOT changing or removing an existing transaction (see transaction_edit / transaction_delete).
 - "wallet_manage": the user wants to CREATE, RENAME, ARCHIVE, RESTORE (un-archive), or DELETE a wallet (their source of funds - cash, bank account, or e-wallet) in their own wallet list, e.g. paraphrases of "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Giro", "arsipkan dompet Mandiri", or "hapus dompet OVO" - managing their wallets, NOT recording a transaction (see transaction) or changing an existing one (see transaction_edit). Asking WHETHER a feature exists stays a product_question.
 - "budget_manage": the user wants to CREATE a budget, CHANGE its monthly amount, or DELETE it, e.g. paraphrases of "tambah budget Makanan 500rb", "ubah budget Makanan jadi 750rb", or "hapus budget Makanan" - managing their budgets (per-category monthly spending targets), NOT recording a transaction (see transaction) and NOT organizing their category list (see category_manage). Asking WHETHER a budget feature exists stays a product_question.
+- "transfer": the user wants to MOVE money BETWEEN TWO OF THEIR OWN WALLETS, e.g. paraphrases of "pindahin 500rb dari BRI ke Mandiri" or "transfer dana dari dompet utama ke OVO" - funds moving between their own accounts, NOT spending or receiving money (see transaction), and NOT sending money to a specific other PERSON (that stays transaction, like "transfer ke andi 500rb"). Asking WHETHER a transfer feature exists stays a product_question.
 - "small_talk": a short acknowledgment, thanks, or casual remark that doesn't need substantive engagement (e.g. "sip", "makasih", "oke").
 - "unclear": none of the above genuinely fit, or the message's intent truly can't be determined even with careful reading.
 

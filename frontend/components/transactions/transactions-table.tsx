@@ -7,12 +7,45 @@
 // filter (docs/ROADMAP.md Sprint D decision J). Uses our real
 // Transaction type (raw_text as description) instead of Lovable's mock
 // Transaction shape.
+//
+// Sprint D4 (display-only, decision F): a 'transfer' row shows BOTH
+// endpoints in the Wallet column as "source → destination" and renders
+// its amount neutrally (no +/− sign, muted tone) - a transfer is neither
+// income nor expense, it only moves money. The API has no create path
+// here (SPECIFICATION.md section 1.2: transactions are recorded through
+// WhatsApp only).
 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { Transaction } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
+
+/** Income gets '+', expense '−'; a transfer gets NO sign (money only moves). */
+function amountSign(type: Transaction['type']) {
+  if (type === 'income') return '+';
+  if (type === 'expense') return '−';
+  return '';
+}
+
+/** Income/expense keep their tones; transfers stay neutral. */
+function amountToneClass(type: Transaction['type']) {
+  if (type === 'income') return 'text-income';
+  if (type === 'expense') return 'text-expense';
+  return 'text-muted-foreground';
+}
+
+/**
+ * Ordinary rows show their single wallet; a transfer row shows BOTH
+ * endpoints as "source → destination". Same fail-closed name resolution
+ * as before - an unresolvable end simply shows "—".
+ */
+function walletLabel(t: Transaction, walletNames: Record<string, string>) {
+  if (t.type !== 'transfer') return walletNames[t.wallet_id ?? ''] ?? '—';
+  const from = walletNames[t.wallet_id ?? ''] ?? '—';
+  const to = walletNames[t.to_wallet_id ?? ''] ?? '—';
+  return `${from} → ${to}`;
+}
 
 export function TransactionsTable({
   items,
@@ -49,15 +82,15 @@ export function TransactionsTable({
                   </span>
                 </TableCell>
                 <TableCell className="px-5 py-4 text-[13px] text-muted-foreground">
-                  {walletNames[t.wallet_id ?? ''] ?? '—'}
+                  {walletLabel(t, walletNames)}
                 </TableCell>
                 <TableCell
                   className={cn(
                     'px-5 py-4 text-right text-[13px] tabular-nums',
-                    t.type === 'income' ? 'text-income' : 'text-expense',
+                    amountToneClass(t.type),
                   )}
                 >
-                  {t.type === 'income' ? '+' : '−'}
+                  {amountSign(t.type)}
                   {formatCurrency(t.amount)}
                 </TableCell>
               </TableRow>
@@ -68,7 +101,8 @@ export function TransactionsTable({
 
       <div className="space-y-2 md:hidden">
         {items.map((t) => {
-          const walletName = walletNames[t.wallet_id ?? ''];
+          const wallet = walletLabel(t, walletNames);
+          const hasWallet = wallet !== '—';
           return (
             <div key={t.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 rounded-xl border border-border/70 bg-card p-4">
               <div className="min-w-0">
@@ -77,10 +111,10 @@ export function TransactionsTable({
                   <span>{format(new Date(t.created_at), 'MMM d')}</span>
                   <span>·</span>
                   <span className="truncate">{t.category}</span>
-                  {walletName && (
+                  {hasWallet && (
                     <>
                       <span>·</span>
-                      <span className="truncate">{walletName}</span>
+                      <span className="truncate">{wallet}</span>
                     </>
                   )}
                 </div>
@@ -88,10 +122,10 @@ export function TransactionsTable({
               <div
                 className={cn(
                   'shrink-0 self-center text-[13px] tabular-nums',
-                  t.type === 'income' ? 'text-income' : 'text-expense',
+                  amountToneClass(t.type),
                 )}
               >
-                {t.type === 'income' ? '+' : '−'}
+                {amountSign(t.type)}
                 {formatCurrency(t.amount)}
               </div>
             </div>

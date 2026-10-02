@@ -143,8 +143,11 @@ export async function deleteUserWalletById(id, userId) {
  * aggregate, deliberately WITHOUT a deleted_at filter: every existing
  * row holds the FK (migration 20261001090000), so history counts too
  * (approved lifecycle decision B: delete only at zero total references).
- * Soft-deleted rows do NOT block archiving (archive never writes
- * transactions and never consults this count).
+ * Sprint D4: a transfer row references TWO wallets, so the match is
+ * `wallet_id = X OR to_wallet_id = X` - a transfer's DESTINATION
+ * endpoint counts as a real reference too (its FK would reject the
+ * delete anyway). Soft-deleted rows do NOT block archiving (archive
+ * never writes transactions and never consults this count).
  */
 export async function countTransactionsForWallet(userId, walletId) {
   assertUserScope(userId, 'countTransactionsForWallet');
@@ -153,26 +156,27 @@ export async function countTransactionsForWallet(userId, walletId) {
     .from('transactions')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
-    .eq('wallet_id', walletId);
+    .or(`wallet_id.eq.${walletId},to_wallet_id.eq.${walletId}`);
 
   if (error) throw error;
   return typeof count === 'number' ? count : 0;
 }
 
 /**
- * Raw facts for the domain's balance/count math: wallet_id, type,
- * amount, deleted_at for the caller's transactions (active AND
- * soft-deleted, wallet_id NULLs included - domain attributes those to
- * the default wallet per decision C). Read-only, user-scoped; the
- * column list is intentionally minimal (one query for ALL wallets - no
- * per-wallet N+1, mirroring the D1 category-count decision).
+ * Raw facts for the domain's balance/count math: wallet_id,
+ * to_wallet_id (Sprint D4 transfer destination), type, amount,
+ * deleted_at for the caller's transactions (active AND soft-deleted,
+ * wallet_id NULLs included - domain attributes those to the default
+ * wallet per decision C). Read-only, user-scoped; the column list is
+ * intentionally minimal (one query for ALL wallets - no per-wallet N+1,
+ * mirroring the D1 category-count decision).
  */
 export async function listTransactionFactsForUser(userId) {
   assertUserScope(userId, 'listTransactionFactsForUser');
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('transactions')
-    .select('wallet_id, type, amount, deleted_at')
+    .select('wallet_id, to_wallet_id, type, amount, deleted_at')
     .eq('user_id', userId);
 
   if (error) throw error;

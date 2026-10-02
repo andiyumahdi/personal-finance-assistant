@@ -129,6 +129,36 @@ historically logs transactions daily → bot sends a soft nudge once,
 not repeated spam.
 ```
 
+### 2.11 Transfer Between Wallets (Sprint D4)
+```
+User: "pindah 500rb dari BRI ke Mandiri"
+Bot:  rule-based transfer intent (verb pindah|pindahin|pindahkan|
+      transfer|trf + BOTH markers "dari" and "ke", dari before ke)
+      → both names resolve STRICTLY against the caller's ACTIVE wallets
+      → ONE row: type='transfer', wallet_id=source, to_wallet_id=dest,
+        category='Transfer', confidence='high', prompt_version=null
+      → static confirm: "Oke, Rp500.000 udah dipindah dari BRI ke
+        Mandiri 👍" (no persona call, no confirmation step, stays IDLE)
+
+No amount yet        → static ask ("Pindah berapa ya?..."), stays IDLE,
+                       nothing written
+Same endpoint        → static no-op ("Dari dan ke dompetnya sama nih..."),
+                       nothing written
+Unresolved endpoints → FAIL OPEN to ordinary transaction recording:
+                       unknown/archived/empty name, reversed markers,
+                       or a rejected insert (pre-migration DB) all fall
+                       through to the existing extraction path, which
+                       records or clarifies the message - never dropped
+                       (section 1.5). trace.transferOutcome/transferWrite
+                       keeps the reason observable.
+
+Person-transfers ("transfer ke andi 500rb") deliberately do NOT match
+the grammar (no "dari") and keep the existing ambiguous-direction flow
+(section 2.6). Transfers never set pending_context: a later "yang tadi"
+correction can never recategorize one; only the AMOUNT is editable
+through the Sprint C edit flow (category/endpoints are locked).
+```
+
 ---
 
 ## 3. ERD / Database Schema (PostgreSQL / Supabase)
@@ -148,13 +178,14 @@ users
 transactions
 ├── id                 uuid PK
 ├── user_id            uuid FK -> users.id
-├── type               text CHECK (type IN ('income','expense'))
+├── type               text CHECK (type IN ('income','expense','transfer'))   -- 'transfer' added in Sprint D4 (migration 20261002090000)
 ├── amount             numeric NOT NULL
-├── category           text NOT NULL        -- name from the active list, see 7.2 (defaults + per-user custom; DB CHECK dropped in Sprint D1, application-enforced)
+├── category           text NOT NULL        -- name from the active list, see 7.2 (defaults + per-user custom; DB CHECK dropped in Sprint D1, application-enforced); ALWAYS 'Transfer' for type='transfer'
 ├── raw_text           text NOT NULL        -- original user message, for audit/debug
 ├── confidence         text CHECK (confidence IN ('high','medium','low'))
 ├── source_message_id  text NOT NULL        -- WhatsApp message id, for dedupe
-├── wallet_id          uuid FK -> wallets.id NULL   -- source of funds; resolved app-side on EVERY write (Sprint D2, decision C) - NULL reads as the default wallet
+├── wallet_id          uuid FK -> wallets.id NULL   -- source of funds; resolved app-side on EVERY write (Sprint D2, decision C) - NULL reads as the default wallet; for type='transfer' it is the SOURCE endpoint
+├── to_wallet_id       uuid FK -> wallets.id NULL   -- Sprint D4: transfer DESTINATION (source = wallet_id); NULL for every income/expense row, always set for transfer rows
 ├── deleted_at          timestamptz NULL     -- soft delete
 ├── created_at         timestamptz DEFAULT now()
 
@@ -203,7 +234,7 @@ budgets
 ├── created_at         timestamptz DEFAULT now()
 ```
 
-**Indices:** `transactions(user_id, created_at)`, `transactions(user_id, deleted_at)`, `transactions(user_id, wallet_id)` (Sprint D2 - balance aggregation + delete reference guard), `message_log(wa_message_id)`, `UNIQUE user_categories(user_id, lower(name))` (Sprint D1 - per-user, case-insensitive name uniqueness), `UNIQUE wallets(user_id, lower(name))` (Sprint D2), partial `UNIQUE wallets(user_id) WHERE is_default` (Sprint D2 - the single-default invariant), partial `UNIQUE budgets(user_id, lower(category)) WHERE wallet_id IS NULL` + partial `UNIQUE budgets(user_id, wallet_id, lower(category)) WHERE wallet_id IS NOT NULL` (Sprint D3 - one category-wide and one wallet-scoped budget per user, case-insensitive).
+**Indices:** `transactions(user_id, created_at)`, `transactions(user_id, deleted_at)`, `transactions(user_id, wallet_id)` (Sprint D2 - balance aggregation + delete reference guard), `transactions(user_id, to_wallet_id)` (Sprint D4 - the destination side of the two-end reference/balance scans), `message_log(wa_message_id)`, `UNIQUE user_categories(user_id, lower(name))` (Sprint D1 - per-user, case-insensitive name uniqueness), `UNIQUE wallets(user_id, lower(name))` (Sprint D2), partial `UNIQUE wallets(user_id) WHERE is_default` (Sprint D2 - the single-default invariant), partial `UNIQUE budgets(user_id, lower(category)) WHERE wallet_id IS NULL` + partial `UNIQUE budgets(user_id, wallet_id, lower(category)) WHERE wallet_id IS NOT NULL` (Sprint D3 - one category-wide and one wallet-scoped budget per user, case-insensitive).
 
 **Notes:**
 - No hard deletes anywhere in the transaction table — `deleted_at` only.
@@ -212,6 +243,7 @@ budgets
 - Category Management (Sprint D1, migration `20260930173900_add_user_categories.sql`): the ten defaults live in code, not as rows — only custom categories are rows, strictly per-user. `transactions.category` holds the NAME (no FK), so: deleting a category NEVER touches transactions (soft-deleted history keeps its old label), and renaming cascades only to that user's ACTIVE transactions (`deleted_at IS NULL`). RLS on `user_categories` is enabled with zero policies (same reason as every other table: service-role-only access, see `supabase/README.md`).
 - Wallet / Source Account (Sprint D2, migration `20261001090000_add_wallets.sql`): `wallets` are rows (unlike categories, a transaction references the default wallet BY ID), hence the partial unique index for exactly-one-default and the FK backstop on `transactions.wallet_id`. `wallet_id` is intentionally NULLABLE (decision C): every write resolves a wallet app-side (`domain/wallets.js` `resolveWallet` — resolve-only, silent fallback to the default, default created on demand; NEVER auto-created from message text) and the migration backfills all pre-existing rows to their default, so `NULL` always reads as the default wallet. Lifecycle is application-enforced, no triggers: default renameable but never archivable/deletable; archive (`archived_at`) is reversible and only hides the wallet from NEW recordings; hard DELETE requires ZERO total references (soft-deleted history counts — application count first, FK as backstop). Balance is computed at READ (income − expense over active transactions) — deliberately no balance column (decision E). RLS on `wallets`: enabled, zero policies (same service-role-only model as every other table).
 - Budget (Sprint D3, migration `20261001110000_add_budgets.sql`): a STANDING MONTHLY target — one row per (user, category[, wallet]) with NO period column and NO `spent` column: progress is computed at READ against the current WIB calendar month (`monthRange()`), so there is nothing to keep in sync (decision-E stance). `category` is a NAME (no FK), exactly like `transactions.category`, which is what lets the D1 category flows extend to budgets by name: rename cascades into that user's budgets (`renameBudgetsCategoryForUser`), delete is blocked while a budget references the name (`countBudgetsForCategory`) — both primitives fail OPEN pre-migration (missing table → 0 rows via `isMissingBudgetsTable`), so category management behaves exactly as in D1/D2 until the push, while every budget read path stays fail-closed. `wallet_id` is nullable (`NULL` = category-wide) with `ON DELETE CASCADE`, so hard-deleting a wallet removes only its own budgets and never blocks the D2 guard (transaction references only). RLS on `budgets`: enabled, zero policies (same service-role-only model as every other table).
+- Transfer between wallets (Sprint D4, migration `20261002090000_add_transfers.sql`): ONE row per transfer — `type='transfer'` with `wallet_id` = source and `to_wallet_id` = destination (NOT two linked income/expense rows: that would double-count history and need a pairing invariant), `category` always the built-in `'Transfer'`, `confidence='high'` and `prompt_version=NULL` because no extraction ever produced it (SPEC 12.3). The FK on `to_wallet_id` is a plain backstop, exactly like `transactions.wallet_id` (no ON DELETE action): balance/count scans treat the row as referencing BOTH wallets (debit source, credit destination when active; both ends keep counting when soft-deleted), and hard DELETE of a wallet requires ZERO total references from EITHER end (`countTransactionsForWallet` / `/api/wallets/[id]` both use a single `wallet_id OR to_wallet_id` OR-group, user-scoped). All income/expense aggregates stay correct by construction because every aggregate is type-scoped (`calculateTotals`, budgets' `.eq('type','expense')`, category breakdowns) — transfers MOVE money, they never create it. Row lifecycle: created only through `domain/transfers.js` `createTransfer` (chat channel; the dashboard has no create path — section 1.2), deletable/undoable through the unchanged Sprint C flows, amount-editable through the unchanged Sprint C edit flow (category/type/endpoints locked), corrections never target it (never enters `pending_context`). RLS: unchanged service-role-only model.
 
 ---
 
@@ -230,6 +262,8 @@ Two consumers: the Baileys backend (writes) and the Next.js dashboard (reads/edi
 | GET | `/api/transactions/:id` | Single transaction detail |
 | PATCH | `/api/transactions/:id` | Edit amount/category/type |
 | DELETE | `/api/transactions/:id` | Soft delete (`deleted_at = now()`) |
+
+Sprint D4 notes: `type` also accepts `transfer` (the Transactions page Type filter gained a **Transfer** option — display only). Transfer rows are ordinary rows to this API — `select('*')` carries `to_wallet_id`, and there is deliberately NO create endpoint for them: like every transaction, a transfer is recorded through WhatsApp only (section 1.2, decision F — the dashboard never creates). The edit policy of section 2.11 applies wherever editing happens: only a transfer row's AMOUNT may change; its `category` (`'Transfer'`), `type` and endpoints are locked.
 
 ### 4.3 Summary / Insight
 | Method | Path | Description |
@@ -259,10 +293,10 @@ Two consumers: the Baileys backend (write path, resolves `wallet_id` on every in
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/wallets` | All wallets for the logged-in user (active + archived) — each row: DB columns + computed `balance` (income − expense over ACTIVE transactions) + `transaction_count` (total references, soft-deleted history included). Exactly 2 queries (wallet list + one grouped facts scan), no N+1. Never auto-creates the default wallet (that happens only in the chat write path) |
+| GET | `/api/wallets` | All wallets for the logged-in user (active + archived) — each row: DB columns + computed `balance` (income − expense over ACTIVE transactions; Sprint D4: a transfer DEBITS its source and CREDITS its destination, so it nets to zero across the user's total) + `transaction_count` (total references from EITHER end — `wallet_id` or `to_wallet_id` — soft-deleted history included). Exactly 2 queries (wallet list + one grouped facts scan), no N+1. Never auto-creates the default wallet (that happens only in the chat write path) |
 | POST | `/api/wallets` | Create — body `{name, type?}` (`type` defaults `cash`, one of `cash\|bank\|e_wallet`) → 201. Errors: `400` + `invalid_name` (with `reason`) / `duplicate` via `409` |
 | PATCH | `/api/wallets/:id` | Exactly ONE of: `{name}` — rename (default wallet allowed; transactions are NEVER touched — no cascade) or `{archived: boolean}` — reversible archive (`403 default` for the default wallet). Also `404 not_found`, `409 duplicate`, `400 invalid_name` |
-| DELETE | `/api/wallets/:id` | Hard delete — only at ZERO total references (soft-deleted history counts), else `409 in_use` + `transaction_count`; `403 default` (default never deletable); `404 not_found` |
+| DELETE | `/api/wallets/:id` | Hard delete — only at ZERO total references from EITHER end (Sprint D4: source `wallet_id` OR destination `to_wallet_id`, single user-scoped OR-group; soft-deleted history counts), else `409 in_use` + `transaction_count`; `403 default` (default never deletable); `404 not_found` |
 
 Routed through `frontend/app/api/wallets/route.ts` + `[id]/route.ts` with the shared auth/session + `assertUserScope` query layer (`backend/src/db/queries/wallets.js`), fail-closed whenever the `wallets` table does not exist yet (migration not pushed → 500, the Settings group shows a retryable error instead of fabricated data).
 
@@ -276,7 +310,7 @@ Two consumers: the Baileys backend (chat channel, intent `budget_manage`) and th
 | PATCH | `/api/budgets/:id` | `{amount}` only — retarget; the row's category and wallet scope NEVER change (re-scope = DELETE + POST). `400 invalid_request` (missing field), `400 invalid_amount`, `404 not_found` (unknown/foreign id or malformed uuid) |
 | DELETE | `/api/budgets/:id` | Unconditional once ownership checks out — budgets are referenced by nothing, so confirmation UX belongs to the chat flow (section 12.1), not the API → `{success:true}`; `404 not_found` |
 
-Chat channel (intent `budget_manage`, one of 16 classifier enum values — classifier prompt `v2026-10-01.2`): the verb comes BEFORE the word `budget` — create `<tambah|tambahin|buat|bikin> budget <kategori> <nominal>`, update `<ubah|update|rubah|ganti> budget <kategori> [jadi|menjadi] <nominal>`, delete `<hapus|delete|buang> budget <kategori>`. Scope is category-wide ONLY (wallet-scoped budgets are API-managed — the handler never passes a `walletId`). Create/update resolve the category by EXACT name and execute immediately (no fuzzy `matchCategoryName`): absent → the category-not-found reply, ambiguous (several categories share the name) → refusal with 0 writes; delete opens `AWAITING_BUDGET_CONFIRM` (section 12.1) with ownership + existence re-checked at commit. A message with the budget word but no recognized verb gets static usage help. Category ties (section 7.2): rename cascades budgets; delete is blocked while `countBudgetsForCategory > 0`.
+Chat channel (intent `budget_manage`, one of the 17 classifier enum values — 16 when D3 shipped, the `transfer` intent became the 17th in D4 — current classifier prompt `v2026-10-02.1`, it read `v2026-10-01.2` at D3): the verb comes BEFORE the word `budget` — create `<tambah|tambahin|buat|bikin> budget <kategori> <nominal>`, update `<ubah|update|rubah|ganti> budget <kategori> [jadi|menjadi] <nominal>`, delete `<hapus|delete|buang> budget <kategori>`. Scope is category-wide ONLY (wallet-scoped budgets are API-managed — the handler never passes a `walletId`). Create/update resolve the category by EXACT name and execute immediately (no fuzzy `matchCategoryName`): absent → the category-not-found reply, ambiguous (several categories share the name) → refusal with 0 writes; delete opens `AWAITING_BUDGET_CONFIRM` (section 12.1) with ownership + existence re-checked at commit. A message with the budget word but no recognized verb gets static usage help. Category ties (section 7.2): rename cascades budgets; delete is blocked while `countBudgetsForCategory > 0`.
 
 Routed through `frontend/app/api/budgets/route.ts` + `[id]/route.ts` (NextAuth session scoping in application code — same ownership pattern as sections 4.4–4.6); backend twin `backend/src/domain/budgets.js` + `backend/src/db/queries/budgets.js`; shared amount/scope/month rules in `frontend/lib/budgets.ts`.
 
@@ -307,6 +341,7 @@ backend/
 │   │   ├── context.js             # pending_context read/write, window logic
 │   │   ├── goals.js
 │   │   ├── categories.js          # custom category create/rename/delete rules (Sprint D1)
+│   │   ├── transfers.js           # transfer endpoint checks + ONE-row insert (Sprint D4)
 │   │   ├── budgets.js             # standing budget create/update/delete + WIB-month progress (Sprint D3)
 │   │   └── summary.js             # totals/percentage calculations (pure math, no AI)
 │   ├── scheduler/
@@ -418,10 +453,11 @@ Built-in defaults (closed set, locked — present for every user, not rows in `u
 On top of those, each user may add custom categories (migration `20260930173900_add_user_categories.sql`):
 - **Name rules:** 2–40 characters after whitespace normalization; first char letter/number, then letters/numbers/spaces plus `& ' ( ) . -`; no emoji, slash, or comma (`backend/src/domain/categories.js`, mirrored for the dashboard API in `frontend/lib/categories.ts`).
 - **Uniqueness & cap:** unique per user, case-insensitive (`UNIQUE (user_id, lower(name))`); a custom name may not collide with a default; max 50 custom categories per user.
-- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (one of 16 classifier enum values since Sprint D3) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
+- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (one of 17 classifier enum values since Sprint D4 — the `transfer` intent joined in D4) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
 - **Delete semantics (locked):** defaults are never deletable (API `403 default`); a category still referenced by ACTIVE transactions or by a budget (Sprint D3) is rejected with the counts (chat reply names both blockers / API `409 in_use` + `activeCount` + `budgetCount`), no confirmation opens; otherwise confirmation in chat ("ya" re-counts at commit time) or Settings dialog. A delete NEVER writes to transactions or budgets — soft-deleted history keeps its historical label.
 - **Rename cascade:** that user's ACTIVE transactions (`deleted_at IS NULL`) AND their budgets (Sprint D3 — `budgets.category` follows the name); other users never touched; defaults not renameable.
 - **Invariant:** every ACTIVE transaction's category is in the user's active list — application-enforced (the DB CHECK on `transactions.category` was dropped in migration `20260930173900` because custom names can't be pre-enumerated).
+- **`Transfer` is now a working label (Sprint D4):** every `type='transfer'` row carries the built-in `Transfer` (`domain/transfers.js` `TRANSFER_CATEGORY`) — chat edits never reassign it (only a transfer's amount is editable, section 2.11), and because transfers are ordinary active transactions they count toward `Transfer`'s usage exactly like any other row (which is moot in practice: defaults are never deletable or renameable anyway).
 - `Lainnya` remains the extraction fallback guess (section 7.1), never a reassignment target.
 
 ### 7.3 Persona Layer (higher temperature, natural language only)
@@ -689,7 +725,7 @@ Two separate mechanisms, both required, solving different problems:
 
 ### 12.3 Prompt Versioning
 
-- Each prompt (extraction, persona, intent classifier) lives in its own file under `src/ai/` with an explicit version identifier at the top of the file (date-based, e.g. `v2026-07-07`), not just edited in place. Version bumps ride together with a golden re-run (Sprint D3: classifier enum 15 → 16 for `budget_manage` → `v2026-10-01.2`, golden 15/15).
+- Each prompt (extraction, persona, intent classifier) lives in its own file under `src/ai/` with an explicit version identifier at the top of the file (date-based, e.g. `v2026-07-07`), not just edited in place. Version bumps ride together with a golden re-run (Sprint D3: classifier enum 15 → 16 for `budget_manage` → `v2026-10-01.2`, golden 15/15; Sprint D4: classifier enum 16 → 17 for `transfer` → `v2026-10-02.1`, golden 15/15 — the extraction prompt itself was NOT touched, its transfer-ambiguity rules still push person-transfers into the ambiguous-direction flow of section 2.6).
 - The version string used for a given call is recorded alongside the result — add `prompt_version` to the `transactions` table (extraction prompt) and include it in structured logs for persona calls.
 - **Why required:** LLM output behavior changes when a prompt changes, sometimes subtly (a rewording that shifts category assignment patterns). Without a version tag on the data itself, a debugging session months later ("why did October's categorization look different from November's?") has no way to correlate a data pattern to a specific prompt change.
 - Old prompt versions are kept in the codebase (git history is enough — no need for a runtime prompt registry at this scale).

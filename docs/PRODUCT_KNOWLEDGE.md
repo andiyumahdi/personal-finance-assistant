@@ -151,20 +151,22 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 - Catat transaksi sambil nyebut sumber dananya, misal "bayar netflix dari BCA 200rb" — kalau namanya cocok sama dompet kamu, otomatis nempel; kalau namanya nggak dikenal atau dompetnya udah kearsip, diam-diam dihitung ke dompet default (Nera nggak pernah bikin dompet baru dari nama di pesan)
 - Kelola dompet lewat chat: "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri" / "aktifkan dompet Mandiri", "hapus dompet OVO"
 - Kelola dompet di dashboard: **Settings → Wallets** (buat, ganti nama, arsip/aktifkan, hapus) — plus kolom **Dompet** di halaman Transaksi
-- Saldo tiap dompet = pemasukan − pengeluaran dari transaksi aktif (dihitung langsung tiap dibuka, bukan angka tersimpan)
+- Pindah saldo antar dompet lewat chat, misal "pindah 500rb dari BRI ke Mandiri" — Nera langsung bikin SATU catatan transfer (dari dompet sumber ke dompet tujuan) dan balas konfirmasi singkat, tanpa langkah "ya"
+- Saldo tiap dompet = pemasukan − pengeluaran dari transaksi aktif (dihitung langsung tiap dibuka, bukan angka tersimpan) — pindahan antar dompet ikut ngurangin dompet sumber dan nambahin dompet tujuan, jadi totalnya tetap sama
 - Ganti nama dompet tidak pernah mengubah transaksi — riwayat selalu nunjuk nama dompet terbaru
 
 **Aturan:**
 - Nama dompet 2–40 karakter, unik per user (beda huruf besar/kecil tetap dianggap sama, termasuk nama yang udah diarsip)
 - Dompet default bisa diganti namanya, tapi tidak bisa diarsip atau dihapus
 - Arsip bersifat balik: dompet yang kearsip nggak muncul sebagai pilihan transaksi baru, tapi riwayat dan saldonya tetap utuh — bisa diaktifkan kapan aja
-- Hapus dompet cuma boleh kalau nggak ada satu pun transaksi yang nunjuk ke sana (termasuk transaksi yang udah dihapus); kalau masih ada, Nera nolak dan kasih tahu jumlahnya
+- Hapus dompet cuma boleh kalau nggak ada satu pun transaksi yang nunjuk ke sana — dari sumber ATAU tujuan pindahan, termasuk transaksi yang udah dihapus; kalau masih ada, Nera nolak dan kasih tahu jumlahnya
 - Tiap user bebas punya banyak dompet dengan jenis tunai / bank / e-wallet; dompet yang dibuat lewat chat selalu masuk jenis tunai
 - Chat dan Settings selalu pakai daftar dompet yang sama
+- Transfer cuma bisa lewat chat (dashboard cuma nampilin — halaman Transaksi punya filter **Transfer**); dua nama harus jelas dan urut "dari … ke …" pakai dompet aktif milikmu; kalau salah satunya nggak cocok, pesannya tetap dicatat sebagai transaksi biasa lewat jalur biasa, nggak pernah hilang
+- Nominal transfer bisa diedit kayak transaksi biasa; kategorinya selalu "Transfer" dan nggak bisa diganti, perbaiki lewat hapus + catat ulang kalau salah
 
 **Belum tersedia saat ini:**
 - Filter berdasarkan dompet di halaman Transaksi (kolomnya aja yang udah ada)
-- Transfer antar dompet (Sprint D4)
 - Saldo yang narik langsung dari rekening bank/e-wallet — semua dicatat manual lewat chat
 
 ## 12. Budget (Anggaran Bulanan)
@@ -194,6 +196,6 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 Sprint C shipped (edit / hapus / cari / undo transaksi lewat chat, all
 cross-checked against implemented code), then synced after Sprint D1
 (category management) and Sprint D2 (wallet management: chat +
-Settings → Wallets, section 11) shipped, then after Sprint D3 (budget: chat commands + the read-only Budgets card, section 12). Any future product change (new
+Settings → Wallets, section 11) shipped, then after Sprint D3 (budget: chat commands + the read-only Budgets card, section 12), then after Sprint D4 (transfer antar dompet: chat command + display-only di dashboard, section 11 — moved from "Belum tersedia" to "Bisa"). Any future product change (new
 feature, changed behavior) should update this file first, then the
 prompt that's grounded in it — not the other way around.

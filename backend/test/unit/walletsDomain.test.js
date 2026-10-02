@@ -588,3 +588,131 @@ describe('computeWalletDetails / listWalletsWithDetails (decision E balance)', (
     await assert.rejects(() => walletsDomain.listWalletsWithDetails(), /user-scoped/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sprint D4 (Transfer) - balance/count reducer two-end awareness and the
+// strict endpoint resolver. Locks the approved D4 decisions: one row per
+// transfer (debit source, credit destination, count at both ends), and
+// resolve-or-NULL endpoints (never the silent default fallback).
+// ---------------------------------------------------------------------------
+
+describe('computeWalletDetails (Sprint D4 transfer rows)', () => {
+  test('active transfer: debits the source, credits the destination, counts at BOTH ends', () => {
+    const wallets = [
+      { id: 'w-src', is_default: false },
+      { id: 'w-dst', is_default: false },
+    ];
+    const details = walletsDomain.computeWalletDetails(wallets, [
+      { wallet_id: 'w-src', to_wallet_id: 'w-dst', type: 'transfer', amount: 500000, deleted_at: null },
+    ]);
+    assert.equal(details.get('w-src').balance, -500000);
+    assert.equal(details.get('w-dst').balance, 500000);
+    assert.equal(details.get('w-src').transactionCount, 1);
+    assert.equal(details.get('w-dst').transactionCount, 1);
+  });
+
+  test("an active transfer nets to zero across the user's total (money only MOVES)", () => {
+    const wallets = [
+      { id: 'w-src', is_default: false },
+      { id: 'w-dst', is_default: false },
+    ];
+    const details = walletsDomain.computeWalletDetails(wallets, [
+      { wallet_id: 'w-src', to_wallet_id: 'w-dst', type: 'transfer', amount: 75000, deleted_at: null },
+      { wallet_id: 'w-src', type: 'income', amount: 100000, deleted_at: null },
+    ]);
+    assert.equal(details.get('w-src').balance, 25000);
+    assert.equal(details.get('w-dst').balance, 75000);
+    assert.equal(
+      details.get('w-src').balance + details.get('w-dst').balance,
+      100000,
+      'the transfer moved 75000, the income added 100000 - nothing vanishes',
+    );
+  });
+
+  test('soft-deleted transfer: history counts at both ends, but NO balance moves', () => {
+    const wallets = [
+      { id: 'w-src', is_default: false },
+      { id: 'w-dst', is_default: false },
+    ];
+    const details = walletsDomain.computeWalletDetails(wallets, [
+      { wallet_id: 'w-src', to_wallet_id: 'w-dst', type: 'transfer', amount: 500000, deleted_at: '2026-10-01T10:00:00.000Z' },
+    ]);
+    assert.equal(details.get('w-src').transactionCount, 1);
+    assert.equal(details.get('w-dst').transactionCount, 1);
+    assert.equal(details.get('w-src').balance, 0);
+    assert.equal(details.get('w-dst').balance, 0);
+  });
+
+  test('destination endpoint outside the wallet list: source still handled, no crash', () => {
+    const wallets = [{ id: 'w-src', is_default: false }];
+    const details = walletsDomain.computeWalletDetails(wallets, [
+      { wallet_id: 'w-src', to_wallet_id: 'w-unknown', type: 'transfer', amount: 40000, deleted_at: null },
+    ]);
+    assert.equal(details.get('w-src').balance, -40000);
+    assert.equal(details.get('w-src').transactionCount, 1);
+    assert.equal(details.has('w-unknown'), false);
+  });
+
+  test('NULL source attributes the debit to the default wallet (decision C read-side)', () => {
+    const wallets = [
+      { id: 'w-default', is_default: true },
+      { id: 'w-dst', is_default: false },
+    ];
+    const details = walletsDomain.computeWalletDetails(wallets, [
+      { wallet_id: null, to_wallet_id: 'w-dst', type: 'transfer', amount: 30000, deleted_at: null },
+    ]);
+    assert.equal(details.get('w-default').balance, -30000);
+    assert.equal(details.get('w-dst').balance, 30000);
+  });
+
+  test('non-finite transfer amount: counted at both ends, balance untouched (same guard as income/expense)', () => {
+    const wallets = [
+      { id: 'w-src', is_default: false },
+      { id: 'w-dst', is_default: false },
+    ];
+    const details = walletsDomain.computeWalletDetails(wallets, [
+      { wallet_id: 'w-src', to_wallet_id: 'w-dst', type: 'transfer', amount: 'abc', deleted_at: null },
+    ]);
+    assert.equal(details.get('w-src').transactionCount, 1);
+    assert.equal(details.get('w-dst').transactionCount, 1);
+    assert.equal(details.get('w-src').balance, 0);
+    assert.equal(details.get('w-dst').balance, 0);
+  });
+});
+
+describe('findActiveWalletExact (Sprint D4 endpoint resolver)', () => {
+  test('exact ACTIVE match, normalized like every other name key (case/space-insensitive)', async () => {
+    const wallet = await walletsDomain.findActiveWalletExact(USER_A, '  bri ');
+    assert.equal(wallet?.id, 'w-a-bri');
+  });
+
+  test('archived wallet name -> null (decision B: archived is not a choice for NEW recordings)', async () => {
+    assert.equal(await walletsDomain.findActiveWalletExact(USER_A, 'Mandiri'), null);
+  });
+
+  test('unknown name -> null, NEVER the default, and never writes anything', async () => {
+    fake.resetCalls();
+    assert.equal(await walletsDomain.findActiveWalletExact(USER_A, 'BCA'), null);
+    assert.equal(transactionWrites().length, 0, 'resolve-only: no transaction side effects');
+    assert.equal(
+      fake.calls.filter((call) => call.table === 'wallets' && call.op !== 'select').length,
+      0,
+      'never auto-creates wallets (decision G) - not even a default row',
+    );
+  });
+
+  test('empty / non-string input -> null without touching the database', async () => {
+    fake.resetCalls();
+    assert.equal(await walletsDomain.findActiveWalletExact(USER_A, '   '), null);
+    assert.equal(await walletsDomain.findActiveWalletExact(USER_A, null), null);
+    assert.equal(fake.calls.length, 0);
+  });
+
+  test("another user's namespace: a name only THEY have resolves to null", async () => {
+    assert.equal(await walletsDomain.findActiveWalletExact(USER_B, 'Kosong'), null);
+  });
+
+  test('requires userId (query-layer scoping asserts)', async () => {
+    await assert.rejects(() => walletsDomain.findActiveWalletExact(undefined, 'BRI'), /user-scoped/);
+  });
+});

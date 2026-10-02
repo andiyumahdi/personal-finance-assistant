@@ -26,6 +26,7 @@ import * as transactionsDomain from '../domain/transactions.js';
 import * as categoriesDomain from '../domain/categories.js';
 import * as walletsDomain from '../domain/wallets.js';
 import * as budgetsDomain from '../domain/budgets.js';
+import * as transfersDomain from '../domain/transfers.js';
 import * as goalsDomain from '../domain/goals.js';
 import * as contextDomain from '../domain/context.js';
 import { calculateTotals } from '../domain/summary.js';
@@ -163,6 +164,19 @@ const BUDGET_WORD_PATTERN = /\bbudget(?:nya)?\b/;
 const BUDGET_CREATE_VERBS = ['tambah', 'tambahin', 'buat', 'bikin'];
 const BUDGET_UPDATE_VERBS = ['ubah', 'update', 'rubah', 'ganti'];
 const BUDGET_DELETE_VERBS = ['hapus', 'delete', 'buang'];
+
+// Sprint D4 (Transfer): the dedicated verb family for moving money between
+// the caller's own wallets (approved grammar v1 - word-boundary matches,
+// five forms). Note this is deliberately NARROWER than TRANSACTION_VERBS
+// ('transfer'/'trf' also gate the ordinary recording path below): here the
+// verb is only ever accepted TOGETHER with BOTH structural markers "dari"
+// and "ke" (isTransferRequest), which is what keeps person-transfers like
+// "transfer ke andi 500rb" / "transfer andi 500rb" out of this intent so
+// they keep their existing extraction / AWAITING_DIRECTION flow untouched
+// (SPECIFICATION.md section 2.6). "transferkan" is NOT in the list by
+// decision - it falls through to the ordinary recording path, which
+// records or clarifies it like any other transaction-shaped message.
+const TRANSFER_VERB_PATTERN = /\b(pindah|pindahin|pindahkan|transfer|trf)\b/i;
 
 // Signals that a message is plausibly about a transaction - checked BEFORE
 // calling Gemini extraction, so an obviously non-financial message doesn't
@@ -353,6 +367,25 @@ const BUDGET_DELETE_REASK_REPLY =
   'Masih mau hapus budgetnya? Balas "ya" buat hapus atau "batal" buat batalin.';
 const BUDGET_DELETE_CANCEL_REPLY = 'Oke, nggak jadi dihapus 👍';
 
+// ---------------------------------------------------------------------------
+// Sprint D4 static replies (D4 Transfer) - same convention as every block
+// above: string literals on purpose, NOT persona-generated (approved D4
+// decision: a transfer confirms with a static reply built inline from the
+// outcome, exactly like the manage-flow replies, with no
+// aiProvider.generateReply call). Tone follows
+// docs/TONE_AND_PERSONALITY.md; the dynamic success line (amount + both
+// wallet names) is assembled inside handleTransferIntent, mirroring the
+// other handlers' inline outcomes.
+// ---------------------------------------------------------------------------
+const TRANSFER_ASK_AMOUNT_REPLY =
+  'Pindah berapa ya? Sebutin nominalnya, misal "pindah 500rb dari BRI ke Mandiri".';
+const TRANSFER_SAME_WALLET_REPLY =
+  'Dari dan ke dompetnya sama nih, jadi nggak ada yang pindah 😅 Mau pindah ke dompet lain?';
+// D4 edit policy: a transfer row's category is fixed ('Transfer'); only
+// the amount may be edited through the Sprint C flow.
+const TRANSFER_EDIT_CATEGORY_REPLY =
+  'Baris transfer cuma bisa diubah nominalnya ya 🙏 Kategori sama dompetnya udah nempel di transfer itu.';
+
 /**
  * Cheap, deterministic check for "does this message plausibly describe a
  * transaction" - a number/amount-unit, or a common transaction verb.
@@ -462,6 +495,29 @@ function isBudgetManageRequest(lower) {
 }
 
 /**
+ * Sprint D4: is this message a transfer between two of the caller's own
+ * wallets? Same discipline as the D1-D3 rules, one notch stricter: the
+ * dedicated transfer verb PLUS BOTH structural markers "dari" and "ke"
+ * are mandatory (approved grammar) - that conjunction is what keeps
+ * person-transfers like "transfer ke andi 500rb" / "transfer andi 500rb"
+ * out of this intent, preserving their existing extraction /
+ * AWAITING_DIRECTION flow (SPECIFICATION.md section 2.6) untouched.
+ *
+ * Marker ORDER (dari before ke) is enforced one level down by
+ * parseTransferCommand, not here: an odd-but-recognizable shape (ke ...
+ * dari ..., an empty endpoint) still routes to the transfer handler,
+ * which either answers directly or FAILS OPEN to ordinary transaction
+ * recording (D4 fail-open decision) - it must never be misdetected as an
+ * unrelated intent instead. No isExcludedFromSprintC guard is needed:
+ * the detectIntent slot sits AFTER recap/goal/help/dashboard, so goal
+ * and help language has already won by then.
+ */
+function isTransferRequest(lower) {
+  if (!TRANSFER_VERB_PATTERN.test(lower)) return false;
+  return containsWord(lower, 'dari') && containsWord(lower, 'ke');
+}
+
+/**
  * Cheap, deterministic intent pre-filter. Runs BEFORE any Gemini call so
  * that obviously-non-transaction messages (recap requests, greetings,
  * help questions, small talk) don't waste an extraction call - and,
@@ -486,8 +542,14 @@ function isBudgetManageRequest(lower) {
  * win over the older keyword blocks ("cari pengeluaran 20rb" would
  * otherwise match recap's "pengeluaran"; "hapus yang 25rb" would
  * otherwise hit the transaction digit gate). The remaining order (recap
- * -> goal -> help -> dashboard -> transaction -> greeting -> small_talk)
- * is unchanged from Sprint B.
+ * -> goal -> help -> dashboard -> transfer -> transaction -> greeting ->
+ * small_talk) is unchanged from Sprint B except for Sprint D4's ONE new
+ * slot: transfer sits behind dashboard_link (every explicit intent
+ * above it wins by slot position) and ahead of the transaction gate, so
+ * a structured wallet-to-wallet message is recorded as a single
+ * transfer row instead of being pushed through extraction - and ahead
+ * of greeting/small_talk for exactly the reason the transaction gate is
+ * ("pagi, pindah 500rb dari BRI ke Mandiri" must still be a transfer).
  */
 export function detectIntent(rawText) {
   const lower = rawText.toLowerCase().trim();
@@ -504,6 +566,7 @@ export function detectIntent(rawText) {
   if (isGoalStartRequest(lower)) return 'goal_start';
   if (HELP_KEYWORDS.some((kw) => lower.includes(kw))) return 'help';
   if (DASHBOARD_LINK_KEYWORDS.some((kw) => lower === kw || lower.includes(kw))) return 'dashboard_link';
+  if (isTransferRequest(lower)) return 'transfer';
 
   // Transaction signal is checked BEFORE greeting/small_talk on purpose:
   // a filler word like "oke" or "halo" can legitimately prefix a real
@@ -933,6 +996,41 @@ export function parseBudgetManageMessage(rawText) {
   }
 
   return { action: null };
+}
+
+/**
+ * Sprint D4 grammar (pure): "<verb> [nominal] dari <dompet> ke <dompet>",
+ * where <verb> is one of TRANSFER_VERB_PATTERN's five forms. Returns
+ * { amount, from, to } when the dedicated verb is present AND the message
+ * contains "dari" BEFORE "ke" (the regex enforces both markers and their
+ * order in one shot - all three structural elements are mandatory per the
+ * approved grammar). Returns null otherwise, so the caller can fail open
+ * to ordinary transaction recording instead of guessing endpoints.
+ *
+ *   - amount: the first money token in the whole message (parseAmount -
+ *     null when there is no number; the handler then asks for it rather
+ *     than recording anything). Numbers INSIDE endpoint names ("BRI 2")
+ *     are accepted as the amount - the same trade-off every other amount
+ *     parse in this file makes (parse-first, never block recording).
+ *   - from/to: the trimmed fragments between the markers (possibly ''
+ *     when nothing follows one; leading/trailing punctuation stripped so
+ *     "ke Mandiri." still matches a wallet named "Mandiri"). They are
+ *     NEVER resolved here - the handler resolves them strictly against
+ *     the caller's ACTIVE wallets and falls open to the ordinary
+ *     recording path when a name doesn't match (person-transfers like
+ *     "transfer dari andi ke budi" land exactly there).
+ */
+export function parseTransferCommand(rawText) {
+  const text = String(rawText ?? '');
+  if (!TRANSFER_VERB_PATTERN.test(text)) return null;
+  const endpoints = text.match(/\bdari\b([\s\S]*?)\bke\b([\s\S]*)/i);
+  if (!endpoints) return null;
+  const trimEdges = (value) => value.replace(/^[.,!\-\s]+|[.,!\-\s]+$/g, '');
+  return {
+    amount: parseAmount(text),
+    from: trimEdges(endpoints[1]),
+    to: trimEdges(endpoints[2]),
+  };
 }
 
 const EDIT_VERB_PATTERN = /\b(ubah|edit|rubah|ganti)\b/;
@@ -1424,6 +1522,110 @@ async function handleTransactionIntent(user, rawText, trace) {
   return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
 }
 
+/**
+ * Sprint D4 (D4 Transfer): the ONLY intent that writes type='transfer'.
+ *
+ * The shape is strict (parseTransferCommand: dedicated verb + mandatory
+ * "dari"/"ke" markers, dari before ke) and both endpoint names resolve
+ * STRICTLY against the caller's ACTIVE wallets (findActiveWalletExact -
+ * never the silent default fallback). Everything that cannot be pinned
+ * down - an unparseable shape, an unknown/archived/empty name, a
+ * degraded database, a write-time race - FAILS OPEN to ordinary
+ * transaction recording (approved D4 fail-open decision): the message is
+ * recorded or clarified by the existing extraction path rather than
+ * dropped, per SPECIFICATION.md section 1.5. The only outcomes that
+ * answer directly are the two the grammar itself owns: no amount yet
+ * (ask for it) and both endpoints resolving to the SAME wallet (nothing
+ * would move). Both stay in IDLE - no new state and no confirmation
+ * step (approved D4 decision); deletion later uses the Sprint C flow
+ * untouched.
+ *
+ * Also deliberately does NOT set pending context: a transfer row is
+ * never the anchor for a later "yang tadi" correction (its category and
+ * endpoints are fixed by design - see applyEdit), so a correction can
+ * never clobber it.
+ */
+async function handleTransferIntent(user, rawText, trace) {
+  const command = parseTransferCommand(rawText);
+  if (!command) {
+    trace.transferOutcome = 'unparseable';
+    return handleTransactionIntent(user, rawText, trace);
+  }
+
+  if (!(typeof command.amount === 'number' && command.amount > 0)) {
+    trace.transferOutcome = 'missing_amount';
+    return { reply: TRANSFER_ASK_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  let from;
+  let to;
+  try {
+    from = await walletsDomain.findActiveWalletExact(user.id, command.from);
+    to = await walletsDomain.findActiveWalletExact(user.id, command.to);
+  } catch (error) {
+    // Degraded mode, same principle as resolveWalletIdForWrite: wallet
+    // resolution must never block recording - fall open to extraction.
+    trace.transferResolution = 'degraded';
+    trace.transferResolutionError = error?.message ?? String(error);
+    return handleTransactionIntent(user, rawText, trace);
+  }
+
+  if (!from || !to) {
+    // Unknown or archived name (person-transfers like "transfer dari andi
+    // ke budi" land here on purpose) - record it the ordinary way.
+    trace.transferOutcome = 'endpoint_unresolved';
+    trace.transferEndpoints = { from: command.from, to: command.to };
+    return handleTransactionIntent(user, rawText, trace);
+  }
+
+  if (from.id === to.id) {
+    trace.transferOutcome = 'same_wallet';
+    return { reply: TRANSFER_SAME_WALLET_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  let result;
+  try {
+    result = await transfersDomain.createTransfer(user.id, {
+      amount: command.amount,
+      fromWalletId: from.id,
+      toWalletId: to.id,
+      rawText,
+      sourceMessageId: generateLocalMessageId(),
+    });
+  } catch (error) {
+    // Write failed (e.g. a database where migration
+    // 20261002090000_add_transfers has not been applied yet): fail open so
+    // the message still gets recorded as an ordinary transaction instead
+    // of crashing the pipeline (SPECIFICATION.md section 1.5).
+    trace.transferWrite = 'degraded';
+    trace.transferWriteError = error?.message ?? String(error);
+    return handleTransactionIntent(user, rawText, trace);
+  }
+
+  if (result.status !== 'created') {
+    trace.transferOutcome = result.status;
+    if (result.status === 'invalid_amount') {
+      return { reply: TRANSFER_ASK_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+    }
+    // Commit-time race (an endpoint archived/deleted between resolve and
+    // insert) or a defensive missing endpoint: fall open, never drop.
+    return handleTransactionIntent(user, rawText, trace);
+  }
+
+  trace.dbAction = {
+    type: 'insert_transfer',
+    transaction: result.transaction,
+    from: from.name,
+    to: to.name,
+  };
+
+  return {
+    reply: `Oke, ${formatRupiah(result.transaction.amount)} udah dipindah dari ${from.name} ke ${to.name} 👍`,
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Sprint C handlers (search / edit / delete / undo). Same signature and
 // dispatch convention as every handler above: registering one is just
@@ -1587,6 +1789,16 @@ async function handleTransactionDelete(user, rawText, trace) {
 
 /** Applies a validated edit change to a user-scoped transaction. */
 async function applyEdit(user, target, change, trace) {
+  // Sprint D4 (D4 edit policy): a transfer row's category is fixed at
+  // 'Transfer' and its endpoints are never chat-editable - only the
+  // AMOUNT may change. Reject the WHOLE change (never silently apply the
+  // amount while dropping the requested category). Both edit paths
+  // funnel through here, so one guard covers them all.
+  if (target.type === 'transfer' && change.category !== undefined) {
+    trace.editOutcome = 'transfer_category_locked';
+    return { reply: TRANSFER_EDIT_CATEGORY_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
   const updated = await transactionsDomain.updateTransaction(target.id, user.id, change);
   if (!updated) {
     trace.editOutcome = 'not_found';
@@ -1596,11 +1808,16 @@ async function applyEdit(user, target, change, trace) {
   trace.dbAction = { type: 'update_transaction', transaction: updated, change };
 
   // Mirrors the existing correction path: keep the continuation window
-  // anchored on the row that was just touched.
-  try {
-    await contextDomain.setPendingContext(user.id, updated.id);
-  } catch (err) {
-    trace.pendingContextSetError = String(err?.message || err);
+  // anchored on the row that was just touched - EXCEPT transfer rows,
+  // which deliberately never enter pending context (same rule as
+  // handleTransferIntent): a later "yang tadi" correction must not be
+  // able to recategorize a transfer.
+  if (updated.type !== 'transfer') {
+    try {
+      await contextDomain.setPendingContext(user.id, updated.id);
+    } catch (err) {
+      trace.pendingContextSetError = String(err?.message || err);
+    }
   }
 
   const parts = [];
@@ -2522,6 +2739,7 @@ export const INTENT_HANDLERS = {
   category_manage: handleCategoryManageIntent,
   wallet_manage: handleWalletManageIntent,
   budget_manage: handleBudgetManageIntent,
+  transfer: handleTransferIntent,
   unclear: handleUnclearIntent,
 };
 

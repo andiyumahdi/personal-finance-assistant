@@ -585,6 +585,88 @@ commands dropped by `whatsapp/webhook.js`'s per-message catch) while
 category management kept working through the missing-table handling
 above (0 budgets counted — D1/D2 behavior unchanged).
 
+**D4 Transfer between wallets ✅ DONE** (item 4 above; delivered in five
+reviewed batches). This RESOLVES item 4's open design question in favor
+of ONE dedicated row over two linked income/expense rows — a linked
+pair would double-count history, need a `transfer_group_id` pairing
+invariant through every aggregate, and make a half-deletable pair
+possible; a single `type='transfer'` row keeps the invariant trivial
+(one row always in, or always out, of every count). Decisions as
+implemented:
+- **Schema:** `transactions.type` CHECK extended to
+  `('income','expense','transfer')` + new nullable
+  `to_wallet_id uuid REFERENCES wallets(id)` (destination; `wallet_id`
+  is the source) + index `transactions(user_id, to_wallet_id)`; migration
+  `20261002090000_add_transfers.sql`. Rows carry `category='Transfer'`
+  (the built-in default has always existed), `confidence='high'`,
+  `prompt_version=NULL` (SPECIFICATION.md 12.3: no extraction produced
+  them). `insertTransaction`/`listTransactions` pass the field through
+  untouched.
+- **Two-end data layer:** balance and reference counts treat a transfer
+  as touching BOTH wallets — active rows debit the source and credit the
+  destination (nets to zero across the user's total), soft-deleted rows
+  still count at both ends (D2 decision B, total references);
+  `countTransactionsForWallet` and the dashboard DELETE guard each became
+  ONE user-scoped `wallet_id OR to_wallet_id` OR-group instead of a
+  single-column filter; `listTransactionFactsForUser` now selects
+  `to_wallet_id`. Every income/expense aggregate stays correct by
+  construction (all are type-scoped: `calculateTotals`, budgets'
+  `.eq('type','expense')`, category breakdowns) — Option B, no aggregate
+  ever sees a transfer.
+- **Domain:** new `domain/transfers.js` `createTransfer` — commit-time
+  ownership + ACTIVE re-check of both endpoints (statuses `created`,
+  `invalid_amount`, `missing_endpoint`, `same_wallet`, `not_found`,
+  `archived`), zero writes on any refusal; resolve via
+  `findActiveWalletExact` (strict exact-active match — NEVER the silent
+  default fallback, never auto-creating).
+- **Chat (one intent, no new state):** rule-based `transfer` intent, slot
+  AFTER every manage/undo/delete/edit/search/recap/goal/help/dashboard
+  intent and BEFORE the transaction gate; grammar = dedicated verb
+  (`pindah|pindahin|pindahkan|transfer|trf`, word-boundary) + BOTH
+  structural markers `dari` and `ke` in dari→ke order
+  (`parseTransferCommand`). Classifier enum 16 → 17, prompt
+  `v2026-10-01.2` → `v2026-10-02.1`, extraction prompt untouched. Static
+  replies only (no persona call): amount ask and same-wallet no-op stay
+  IDLE with 0 writes; success confirms inline with both names.
+  **Fail-open (D-4):** unresolved endpoints (unknown/archived/empty
+  name), reversed markers, a degraded DB, or a rejected insert all fall
+  through to `handleTransactionIntent` — the message is recorded or
+  clarified by the existing extraction path, never dropped
+  (SPECIFICATION.md 1.5), reason observable on the trace.
+  Person-transfers (`transfer ke andi 500rb`) don't match the grammar and
+  keep SPECIFICATION.md 2.6 untouched. KNOWN FOLLOW-UP: the verb list is
+  exactly the five approved forms — derived variants like `transferkan`
+  or `pindahkanlah` deliberately do NOT match and fall through to the
+  transaction gate (handled by the ordinary extraction path — record or
+  clarify, never dropped, SPECIFICATION.md 1.5); widen
+  `TRANSFER_VERB_PATTERN` only if real traffic shows the gap. NO
+  pending context after a transfer (no correction anchor, D-5) and NO
+  confirmation state (9 states stay 9).
+- **Sprint C interplay (D-7):** a transfer row's amount is editable
+  through the existing edit flow; a category change on it is rejected
+  with a static reply (`transfer_category_locked`) and transfer rows
+  never enter pending context, so corrections can't recategorize them.
+  Delete/undo/search/list flows work on transfer rows unchanged (the
+  existing `Rp500.000 · Transfer` line needs no new formatter).
+- **Dashboard (display-only, D-6):** no create API anywhere
+  (SPECIFICATION.md 1.2). `frontend/lib/types.ts` union += `transfer` +
+  `to_wallet_id`; `/api/wallets` GET mirrors the two-end reducer and its
+  facts scan; `/api/wallets/[id]` DELETE counts either end; the
+  Transactions table shows `source → destination` in the Wallet column
+  with a neutral amount (no +/−), the dashboard recent list renders the
+  same way, and the Type filter gained **Transfer**; `app/api/transactions`
+  and `/api/summary` pass through with zero changes (type-scoped math).
+- **Verification:** backend unit 607/607 (incl. new routing/parsers/
+  flows + two-end query/reducer suites), integration 23/23 (real DB),
+  golden 15/15, `test:intent` 8/9 (both new `transfer` paraphrases pass;
+  the 1 failure is the pre-existing `woy pagi` → rule-router leak,
+  report-only, unchanged from baseline), backend lint 0 errors, frontend
+  lint + `next build` clean. Migration applied as part of D4
+  finalization with this commit/push (local history = remote, 7/7
+  after); pre-push the insert path was verified fail-open against the
+  old CHECK constraint (unit test arms a failing insert and asserts the
+  message still gets recorded).
+
 ### Sprint E — Intelligence
 
 Goal: increase the AI's value beyond transaction logging. Scope: AI

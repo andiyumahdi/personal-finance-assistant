@@ -80,8 +80,8 @@ describe('collision matrix: category_manage vs the transaction rules', () => {
 });
 
 describe('classifier enum <-> handler map sync (D1 mandate)', () => {
-  test("enum is 16 (14 + D2's wallet_manage + D3's budget_manage) and both sides match exactly", () => {
-    assert.equal(INTENT_CATEGORIES.length, 16);
+  test("enum is 17 (14 + D2's wallet_manage + D3's budget_manage + D4's transfer) and both sides match exactly", () => {
+    assert.equal(INTENT_CATEGORIES.length, 17);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 

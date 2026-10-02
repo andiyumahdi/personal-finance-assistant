@@ -282,9 +282,15 @@ describe('countTransactionsForWallet (hard-delete guard aggregate)', () => {
     const txCalls = fake.calls.filter((call) => call.table === 'transactions');
     assert.equal(txCalls.length, 1);
     assert.equal(txCalls[0].op, 'select');
-    // scoped to the caller AND to this wallet
+    // scoped to the caller AND matched against this wallet from EITHER
+    // end (Sprint D4: a transfer's destination counts as a reference too)
     assert.ok(txCalls[0].filters.some((f) => f.type === 'eq' && f.col === 'user_id' && f.val === USER_A));
-    assert.ok(txCalls[0].filters.some((f) => f.type === 'eq' && f.col === 'wallet_id' && f.val === 'w-a-bri'));
+    const orFilter = txCalls[0].filters.find((f) => f.type === 'or');
+    assert.ok(orFilter, 'Sprint D4 guard matches wallet_id OR to_wallet_id');
+    assert.deepEqual(
+      orFilter.conditions.map((f) => `${f.col}.${f.type}.${f.val}`).sort(),
+      ['to_wallet_id.eq.w-a-bri', 'wallet_id.eq.w-a-bri'],
+    );
     // deliberately NO deleted_at filter: total references, decision B
     assert.equal(
       txCalls[0].filters.some((f) => f.col === 'deleted_at'),
@@ -327,5 +333,101 @@ describe('listTransactionFactsForUser (balance/count scan)', () => {
 
   test('requires userId', async () => {
     await assert.rejects(() => walletQueries.listTransactionFactsForUser(), /user-scoped/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sprint D4 (Transfer) - two-end reference awareness in the query layer.
+// ---------------------------------------------------------------------------
+
+describe('countTransactionsForWallet (Sprint D4 two-end guard)', () => {
+  function pushTransfer(overrides = {}) {
+    fake.tables.transactions.push({
+      id: 'tx-a-transfer',
+      user_id: USER_A,
+      type: 'transfer',
+      amount: 500000,
+      category: 'Transfer',
+      raw_text: 'pindahin 500rb dari BRI ke Dompet Utama',
+      confidence: 'high',
+      source_message_id: 'LOCAL-test-transfer',
+      prompt_version: null,
+      wallet_id: 'w-a-default',
+      to_wallet_id: 'w-a-bri',
+      deleted_at: null,
+      created_at: '2026-10-01T10:00:00.000Z',
+      ...overrides,
+    });
+  }
+
+  test('counts a transfer at the DESTINATION end too', async () => {
+    // Baseline for A's BRI: tx-a-bri-active + tx-a-bri-deleted = 2.
+    assert.equal(await walletQueries.countTransactionsForWallet(USER_A, 'w-a-bri'), 2);
+
+    // The transfer's SOURCE is the default wallet, its DESTINATION is
+    // BRI - referencing BRI from either end must block the hard delete.
+    pushTransfer();
+    assert.equal(await walletQueries.countTransactionsForWallet(USER_A, 'w-a-bri'), 3);
+    // ...and the source end still counts: default had 1 (active) + this
+    // transfer as source = 2.
+    assert.equal(await walletQueries.countTransactionsForWallet(USER_A, 'w-a-default'), 2);
+  });
+
+  test('a soft-deleted transfer still counts at both ends (decision B, total references)', async () => {
+    pushTransfer({ deleted_at: '2026-10-01T11:00:00.000Z' });
+    assert.equal(await walletQueries.countTransactionsForWallet(USER_A, 'w-a-bri'), 3);
+    assert.equal(await walletQueries.countTransactionsForWallet(USER_A, 'w-a-default'), 2);
+  });
+
+  test("another user's transfer never inflates the caller's guard", async () => {
+    fake.tables.transactions.push({
+      id: 'tx-b-transfer',
+      user_id: USER_B,
+      type: 'transfer',
+      amount: 90000,
+      category: 'Transfer',
+      raw_text: 'pindah 90rb',
+      confidence: 'high',
+      source_message_id: 'LOCAL-test-b-transfer',
+      prompt_version: null,
+      wallet_id: 'w-b-bri',
+      to_wallet_id: 'w-a-bri', // points at A's wallet on purpose
+      deleted_at: null,
+      created_at: '2026-10-01T10:00:00.000Z',
+    });
+    assert.equal(
+      await walletQueries.countTransactionsForWallet(USER_A, 'w-a-bri'),
+      2,
+      'the user_id scope still gates every row',
+    );
+    assert.equal(await walletQueries.countTransactionsForWallet(USER_B, 'w-b-bri'), 2);
+  });
+});
+
+describe('listTransactionFactsForUser (Sprint D4: includes destination)', () => {
+  test('exposes to_wallet_id so the reducer can credit the destination', async () => {
+    fake.tables.transactions.push({
+      id: 'tx-a-transfer',
+      user_id: USER_A,
+      type: 'transfer',
+      amount: 500000,
+      category: 'Transfer',
+      raw_text: 'pindahin 500rb dari BRI ke Dompet Utama',
+      confidence: 'high',
+      source_message_id: 'LOCAL-test-transfer',
+      prompt_version: null,
+      wallet_id: 'w-a-default',
+      to_wallet_id: 'w-a-bri',
+      deleted_at: null,
+      created_at: '2026-10-01T10:00:00.000Z',
+    });
+
+    const facts = await walletQueries.listTransactionFactsForUser(USER_A);
+    const transfer = facts.find((row) => row.type === 'transfer');
+    assert.ok(transfer, 'transfer rows stay in the balance scan');
+    assert.equal(transfer.to_wallet_id, 'w-a-bri');
+    assert.equal(transfer.wallet_id, 'w-a-default');
+    // still strictly read-only + user-scoped
+    assert.ok(facts.every((row) => !('user_id' in row) || row.user_id !== USER_B));
   });
 });

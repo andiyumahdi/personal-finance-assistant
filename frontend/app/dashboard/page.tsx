@@ -174,8 +174,19 @@ export default function DashboardPage() {
                         <span className="truncate">{t.category}</span>
                       </div>
                     </div>
-                    <div className={cn('text-[13px] tabular-nums', t.type === 'income' ? 'text-income' : 'text-expense')}>
-                      {t.type === 'income' ? '+' : '−'}
+                    <div
+                      className={cn(
+                        'text-[13px] tabular-nums',
+                        // Sprint D4: transfers render neutrally - they are
+                        // neither income nor expense (money only moves).
+                        t.type === 'income'
+                          ? 'text-income'
+                          : t.type === 'expense'
+                            ? 'text-expense'
+                            : 'text-muted-foreground',
+                      )}
+                    >
+                      {t.type === 'income' ? '+' : t.type === 'expense' ? '−' : ''}
                       {formatCurrency(t.amount)}
                     </div>
                   </li>

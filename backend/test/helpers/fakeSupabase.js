@@ -12,6 +12,10 @@
 //   - .select(cols, { count: 'exact', head: true }) resolves
 //     { data: null, count: n } - the aggregate head-count used by the D1
 //     delete guard;
+//   - .or('col.eq.val,col2.eq.val2') groups conditions with OR (they AND
+//     with the other filters on the chain, like PostgREST) - only eq is
+//     supported, recorded as { type: 'or', conditions } so tests can
+//     assert the two-end wallet reference guard (Sprint D4);
 //   - every call is recorded in db.calls so tests can assert things like
 //     "search only ever issued SELECTs" (read-only proof);
 //   - db.failNext(table, op, message?) arms ONE-shot failure injection:
@@ -76,6 +80,9 @@ const TABLE_DEFAULTS = {
 const UPSERT_KEYS = { pending_context: 'user_id' };
 
 function matchesFilter(row, filter) {
+  if (filter.type === 'or') {
+    return filter.conditions.some((condition) => matchesFilter(row, condition));
+  }
   const value = row[filter.col];
   switch (filter.type) {
     case 'eq':
@@ -151,6 +158,24 @@ class FakeQuery {
 
   eq(col, val) {
     this.filters.push({ type: 'eq', col, val });
+    return this;
+  }
+
+  // PostgREST OR group: 'col.eq.val,col2.eq.val2' matches when ANY
+  // condition is true (AND-ed with the chain's other filters). Only eq
+  // is supported today (all the query layer uses) - anything else throws
+  // loudly, like every other unsupported op in this fake.
+  or(clause) {
+    const conditions = String(clause)
+      .split(',')
+      .map((part) => {
+        const segments = part.split('.');
+        if (segments.length < 3 || segments[1] !== 'eq') {
+          throw new Error(`fakeSupabase: unsupported or() condition: ${part}`);
+        }
+        return { type: 'eq', col: segments[0], val: segments.slice(2).join('.') };
+      });
+    this.filters.push({ type: 'or', conditions });
     return this;
   }
 

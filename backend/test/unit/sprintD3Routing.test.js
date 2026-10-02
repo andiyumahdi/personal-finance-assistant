@@ -199,8 +199,8 @@ describe('parseBudgetManageMessage (pure parser)', () => {
 });
 
 describe('classifier enum <-> handler map sync (D3 mandate)', () => {
-  test('enum is 16 (D3 added budget_manage) and both sides match exactly', () => {
-    assert.equal(INTENT_CATEGORIES.length, 16);
+  test("enum is 17 (D4 added transfer) and both sides match exactly", () => {
+    assert.equal(INTENT_CATEGORIES.length, 17);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 
@@ -220,7 +220,9 @@ describe('classifier enum <-> handler map sync (D3 mandate)', () => {
 
   test('the classifier prompt describes budget_manage, prompt version bumped (SPEC 12.3)', () => {
     assert.match(INTENT_CLASSIFIER_SYSTEM_INSTRUCTION, /- "budget_manage":/);
-    assert.equal(INTENT_CLASSIFIER_PROMPT_VERSION, 'v2026-10-01.2');
+    // D4 bumped the classifier prompt again (transfer added to the enum
+    // and the instruction) - SPECIFICATION.md section 12.3 versioning.
+    assert.equal(INTENT_CLASSIFIER_PROMPT_VERSION, 'v2026-10-02.1');
   });
 });
 
