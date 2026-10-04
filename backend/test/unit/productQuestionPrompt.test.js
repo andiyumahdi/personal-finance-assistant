@@ -41,9 +41,9 @@ const transferSection = () => sectionLines('TRANSFER');
 const dashboardSection = () => sectionLines('DASHBOARD');
 
 describe('PRODUCT_QUESTION_PROMPT_VERSION (SPECIFICATION.md section 12.3)', () => {
-  test('pinned to the chat-intelligence sync version (rekap periode + narrowing, list reads, goal read/rename/delete)', () => {
+  test('pinned to the P2-C sync version (web URL added to the dashboard knowledge)', () => {
     // Bump this whenever KNOWLEDGE_BASE content changes (date-based).
-    assert.equal(PRODUCT_QUESTION_PROMPT_VERSION, 'v2026-10-03.1');
+    assert.equal(PRODUCT_QUESTION_PROMPT_VERSION, 'v2026-10-04');
   });
 });
 
@@ -176,6 +176,15 @@ describe('CARA PAKAI + DASHBOARD sync', () => {
     assert.match(
       dashboardSection(),
       /DASHBOARD - BELUM TERSEDIA:.*tambah\/ubah\/hapus budget dari dashboard/,
+    );
+  });
+
+  test('DASHBOARD carries the verified production web URL (mirrors PK section 7)', () => {
+    // P2-C: web-discovery answers must be able to cite the real address
+    // from knowledge, and it must never drift from PRODUCT_KNOWLEDGE.md.
+    assert.match(
+      dashboardSection(),
+      /DASHBOARD - alamat web production: https:\/\/personal-finance-assistant-delta\.vercel\.app/,
     );
   });
 });

@@ -103,6 +103,10 @@ Dashboard membantu kamu melihat kondisi keuangan secara lebih lengkap
 dibanding yang bisa ditampilkan lewat chat, seperti grafik, riwayat
 transaksi, analisis, dan progress target.
 
+**Alamat:** `https://personal-finance-assistant-delta.vercel.app`
+(ini alamat web production yang dipakai; login pertama kali tetap lewat
+link connect dari bot — lihat bagian 8)
+
 **Bisa:**
 - Lihat ringkasan keuangan bulan ini dan progress dibanding bulan lalu
 - Lihat tren keuangan beberapa bulan terakhir dalam bentuk grafik

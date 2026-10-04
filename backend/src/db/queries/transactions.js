@@ -87,6 +87,27 @@ export async function listTransactions(userId, filters = {}) {
   return data;
 }
 
+/**
+ * P2-C (onboarding): how many ACTIVE (non-soft-deleted) rows has this user
+ * ever recorded? Zero means "has never completed the core loop" - the
+ * condition for the one-time first-contact introduction (SPECIFICATION.md
+ * 12.1 note: MVP has no onboarding QUESTION; this is a read-only
+ * completeness probe, not a new state). Read-only head+count aggregate -
+ * never fetches rows, never writes, always user-scoped.
+ */
+export async function countActiveTransactionsForUser(userId) {
+  assertUserScope(userId, 'countActiveTransactionsForUser');
+  const supabase = getSupabaseClient();
+  const { count, error } = await supabase
+    .from('transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .is('deleted_at', null);
+
+  if (error) throw error;
+  return typeof count === 'number' ? count : 0;
+}
+
 /** User-scoped. Returns the updated row, or null when not found/not owner. */
 export async function updateTransactionById(id, userId, changes) {
   assertUserScope(userId, 'updateTransactionById');

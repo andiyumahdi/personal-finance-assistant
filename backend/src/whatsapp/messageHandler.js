@@ -101,6 +101,12 @@ const HELP_KEYWORDS = [
   'ini apa',
   'buat apa',
   'gunanya apa',
+  // P2-C: onboarding/test-matrix phrasings ("ini bot apa?", "lu bisa
+  // bantu apa?") - deliberately narrow fragments so no data message
+  // ("pengeluaran bulan ini buat apa") can be stolen by them, and so the
+  // rule router answers without spending a classifier call.
+  'bot apa',
+  'bantu apa',
 ];
 const GREETING_WORDS = ['halo', 'hai', 'hi', 'hello', 'pagi', 'siang', 'sore', 'malam'];
 const SMALL_TALK_WORDS = [
@@ -675,11 +681,15 @@ const CAPABILITY_PREFIX =
  * PERIOD is data ("apakah pengeluaran bulan ini besar?" stays a recap), so
  * the period check runs before anything else.
  */
-/** Trailing "<feature> itu gimana?" - "budget itu gimana?" / "transfer itu
- *  gimana?" asks how a feature works, not for the user's own data. Capped at
- *  60 chars before "itu" and paired with NO money amount, so an amount-bearing
- *  statement ("jajan 20rb itu gimana") can never be swallowed by it. */
-const TRAILING_ITU_GIMANA = /^(?:.{3,60}?\s)itu\s+gimana\s*\??$/;
+/** Trailing "<feature> itu <question>?" - "budget itu gimana?" /
+ *  "wallet itu buat apa?" asks how a feature works or what it is FOR, not
+ *  for the user's own data. Capped at 60 chars before "itu" and paired with
+ *  NO money amount, so an amount-bearing statement ("jajan 20rb itu gimana")
+ *  can never be swallowed by it. P2-C (audit PK-04): the shape grew from
+ *  just "gimana" to the capability-question endings the audit found
+ *  ("buat apa" / "gunanya apa" / "fungsinya apa" / "ngapain"). */
+const TRAILING_ITU_QUESTION =
+  /^(?:.{3,60}?\s)itu\s+(?:gimana|buat\s+apa(?:\s+sih)?|gunanya\s+apa|fungsinya\s+apa|ngapain)\s*\??$/;
 
 export function isCapabilityQuestion(rawText) {
   const lower = String(rawText ?? '').toLowerCase().trim();
@@ -687,7 +697,7 @@ export function isCapabilityQuestion(rawText) {
   if (hasPeriodSignal(lower)) return false;
   if (CAPABILITY_PREFIX.test(lower)) return true;
   if (BISA_NEGATION_SHAPE.test(lower)) return true;
-  if (TRAILING_ITU_GIMANA.test(lower) && parseMoneyAmount(lower) === null) return true;
+  if (TRAILING_ITU_QUESTION.test(lower) && parseMoneyAmount(lower) === null) return true;
   return /\bbisakah\b|\bdapatkah\b/.test(lower);
 }
 
@@ -770,9 +780,33 @@ function isSavingsPlanRequest(lower) {
  * ("login", "dashboard") still reaches its own slot further down.
  */
 const LINK_WORD_PATTERN =
-  /\b(?:login|masuk|link|url|web|website|dashboard|akun|account|google|sso|password|sandi|email)\b/;
+  /\b(?:login|masuk|link(?:nya)?|url(?:nya)?|web(?:site)?(?:nya|ku|mu)?|dashboard|akun|account|google|sso|password|sandi|email)\b/;
+
+/**
+ * P2-C: LINK words that can only ever mean the account/web surface in a
+ * QUESTION - LINK_WORD_PATTERN minus "masuk", which is also the
+ * money-direction word ("uang masuk berapa?" is a data question, not a
+ * login one). Used only to widen the knowledge gate to non-how-to account
+ * questions ("gue login pakai akun apa?"); how-to questions keep the full
+ * pattern ("gimana cara masuk?").
+ */
+const LINK_SURFACE_QUESTION_PATTERN =
+  /\b(?:login|link(?:nya)?|url(?:nya)?|web(?:site)?(?:nya|ku|mu)?|dashboard|akun|account|google|sso|password|sandi|email)\b/;
+
 const KNOWLEDGE_DOMAIN_PATTERN =
   /\b(?:wallet|dompet|saldo|rekening|budget|kategori|goal|transfer|transaksi|rekap|pengeluaran|pemasukan|nabung|login|akun|account|dashboard|link|url|web|website|google|password|sandi|email|whatsapp|wa)\b/;
+
+/**
+ * P2-C: the DATA domains of the product - deliberately WITHOUT the
+ * account/web surface words that LINK_WORD_PATTERN owns. The split matters
+ * for questions that name BOTH a feature and the web ("cara lihat budget di
+ * web?", "wallet gue di web dimana?"): those ask WHERE the feature lives in
+ * the dashboard, and product knowledge (KB: "kartu Budget di dashboard",
+ * "Settings - Wallets") answers that - the dashboard facts reply cannot,
+ * and a read slot would answer with data rows instead of a location.
+ */
+const FEATURE_DOMAIN_PATTERN =
+  /\b(?:wallet|dompet|saldo|rekening|budget|kategori|goal|transfer|transaksi|rekap|pengeluaran|pemasukan|nabung)\b/;
 
 /** Spending words that make a period message a recap instead of a record. */
 const SPENDING_WORD_PATTERN =
@@ -843,6 +877,18 @@ export function detectIntent(rawText) {
       isBudgetManageRequest(lower) ||
       isGoalManageRequest(lower));
 
+  // P2-C: a question naming BOTH the web/login surface and a data feature
+  // ("cara lihat budget di web?", "wallet gue di web dimana?") asks WHERE
+  // that feature lives - product knowledge owns the answer. It must win
+  // BEFORE the read slots below, which would otherwise answer with data
+  // rows ("wallet gue di web dimana?" -> a wallet list) instead of the
+  // location the user asked for (audit WB-04/WB-06).
+  const webFeatureQuestion =
+    isQuestionMessage(lower) &&
+    LINK_WORD_PATTERN.test(lower) &&
+    FEATURE_DOMAIN_PATTERN.test(lower);
+  if (webFeatureQuestion) return 'product_question';
+
   // Priority 4: reads/list/status answer with backend facts. Safe reads are
   // never gated - except when the user is asking HOW to do it (then the
   // knowledge slot below owns the answer).
@@ -870,8 +916,18 @@ export function detectIntent(rawText) {
   // Priority 5: knowledge gate - link/login questions are answered
   // informationally (no token is minted there), capability questions come
   // from the locked product knowledge, everything else falls through to the
-  // regular router.
-  if (howTo || questionWrite) {
+  // regular router. P2-C: any question naming the account/WEB surface
+  // ("gue login pakai akun apa?", "webnya mana?") also joins the gate -
+  // without it those shapes only reached the deterministic dashboard facts
+  // via the live classifier, or fell to 'unclear' (audit WB-01/WB-03).
+  // The strict sub-pattern deliberately OMITS "masuk" (a money-direction
+  // word - "uang masuk berapa?" must keep its current path) and a period
+  // signal keeps every dated query on the recap path.
+  const linkSurfaceQuestion =
+    isQuestionMessage(lower) &&
+    !hasPeriodSignal(lower) &&
+    LINK_SURFACE_QUESTION_PATTERN.test(lower);
+  if (howTo || questionWrite || linkSurfaceQuestion) {
     if (LINK_WORD_PATTERN.test(lower)) return 'dashboard_link';
     if (KNOWLEDGE_DOMAIN_PATTERN.test(lower)) return 'product_question';
   }
@@ -891,6 +947,19 @@ export function detectIntent(rawText) {
   if (isGoalStartRequest(lower)) return 'goal_start';
   if (HELP_KEYWORDS.some((kw) => lower.includes(kw))) return 'help';
   if (DASHBOARD_LINK_KEYWORDS.some((kw) => lower === kw || lower.includes(kw))) return 'dashboard_link';
+  // P2-C: a bare link/URL/web request WITHOUT an amount ("kasih link web
+  // dong", "webnya mana?", "buka website") is a web-discovery ask -
+  // answered with the dashboard URL, no credential. Suffixed forms count
+  // ("webnya" cannot match a bare \bweb\b). The amount guard keeps money
+  // messages ("beli web hosting 150rb") on the recording path below, and
+  // every keyword with real routing weight (recap, goal-start, search)
+  // runs before this line.
+  if (
+    parseMoneyAmount(lower) === null &&
+    /\b(?:link(?:nya)?|url(?:nya)?|web(?:site)?(?:nya|ku|mu)?|situs(?:nya)?)\b/.test(lower)
+  ) {
+    return 'dashboard_link';
+  }
   if (isTransferRequest(lower)) return 'transfer';
 
   // Transaction signal is checked BEFORE greeting/small_talk on purpose:
@@ -1347,7 +1416,11 @@ export function parseTransferCommand(rawText) {
   if (!TRANSFER_VERB_PATTERN.test(text)) return null;
   const endpoints = text.match(/\bdari\b([\s\S]*?)\bke\b([\s\S]*)/i);
   if (!endpoints) return null;
-  const trimEdges = (value) => value.replace(/^[.,!\-\s]+|[.,!\-\s]+$/g, '');
+  // P2-C (section 9A): "?" is punctuation, not part of a wallet name - a
+  // question-form transfer ("kalau mau transfer 100rb dari BRI ke Dana?")
+  // must still resolve its endpoints instead of silently degrading to an
+  // ordinary transaction. The fall-open path below stays untouched.
+  const trimEdges = (value) => value.replace(/^[.,!?:\-\s]+|[.,!?:\-\s]+$/g, '');
   return {
     amount: parseAmount(text),
     from: trimEdges(endpoints[1]),
@@ -1589,7 +1662,15 @@ async function resolveIntent(rawText, trace) {
   // ("bisa edit transaksi lewat chat?") is a real, already-designed flow.
   if (CLASSIFIER_WRITE_INTENTS.has(classifiedIntent) && isCapabilityQuestion(rawText)) {
     trace.intentOverride = 'capability_question_blocks_write';
-    return LINK_WORD_PATTERN.test(rawText.toLowerCase()) ? 'dashboard_link' : 'product_question';
+    // P2-C: mirrors the rule router - a capability question that names a
+    // DATA feature AND the web ("bisa bikin budget dari dashboard?") is
+    // answered from product knowledge; a pure account/web question keeps
+    // the deterministic dashboard facts.
+    const lowerText = rawText.toLowerCase();
+    if (LINK_WORD_PATTERN.test(lowerText) && !FEATURE_DOMAIN_PATTERN.test(lowerText)) {
+      return 'dashboard_link';
+    }
+    return 'product_question';
   }
 
   return classifiedIntent;
@@ -2612,16 +2693,72 @@ async function handleGoalStartIntent(user, rawText, trace) {
   };
 }
 
-async function handleHelpIntent() {
+/**
+ * P2-C onboarding / first contact.
+ *
+ * SPEC 12.1 documents state_context as "overwritten on each transition"
+ * and records that MVP has NO onboarding question - so this adds no state,
+ * no flag column and no new state machine: the trigger is derived from the
+ * user's own data instead. "Onboarding incomplete" == the user has never
+ * recorded a transaction (read-only head count). Once anything is recorded
+ * - or if the user is mid-flow (never IDLE) - the introduction can no
+ * longer fire, which is what keeps it from spamming every greeting.
+ * Web URL / capabilities come from the same sources as the help reply
+ * (PRODUCT_KNOWLEDGE locked copy + dashboardBaseUrl()).
+ */
+async function shouldSendOnboarding(user) {
+  if (!user || user.state !== STATES.IDLE) return false;
+  const recorded = await transactionQueries.countActiveTransactionsForUser(user.id);
+  return recorded === 0;
+}
+
+/** Structured tier: heading + bullets (<=5) + one closing line. */
+function buildOnboardingReply() {
+  const url = dashboardBaseUrl();
+  return (
+    '*Halo, gue Nera!* 👋\n\n' +
+    'Akun kamu udah aktif - tinggal chat biasa buat nyatet duit:\n\n' +
+    '- Catat transaksi: "jajan 20rb" atau "gaji 5jt"\n' +
+    '- Cek kondisi: "rekap bulan ini" atau "budget gue berapa"\n' +
+    '- Dompet, transfer, kategori, sama goal juga diatur lewat chat\n' +
+    `- Dashboard web: ${url} (login pertama kali, ketik "dashboard")\n\n` +
+    'Coba kirim satu transaksi deh.'
+  );
+}
+
+/**
+ * Static help list (Structured tier, <=5 bullets). P2-C (audit PK-02):
+ * the old list was missing four real capability areas - dompet +
+ * transfer antar dompet, budget, kategori - and never mentioned the web
+ * address. Content is cross-checked against PRODUCT_KNOWLEDGE sections
+ * 2-7; anything not listed there stays unlisted.
+ */
+function buildHelpReply() {
+  return (
+    '😊 *Nera bisa bantu kamu:*\n\n' +
+    '- Catat & atur transaksi - "jajan 20rb", lalu cari/ubah/hapus/undo kapan aja\n' +
+    '- Rekap - "rekap bulan ini" atau "pengeluaran hari ini"\n' +
+    '- Dompet & transfer - "tambah dompet BRI", "pindah 500rb dari BRI ke Dana"\n' +
+    '- Budget, kategori, sama goal - "tambah budget Makanan 500rb"\n' +
+    `- Dashboard web - ${dashboardBaseUrl()} (ketik "dashboard" buat link connect)\n\n` +
+    'Nggak perlu format khusus, ngobrol biasa aja 👍'
+  );
+}
+
+async function handleHelpIntent(user, rawText, trace) {
+  // First contact gets the introduction (which SUPERSEDES the plain list:
+  // it covers capabilities, the web and a first command); every later ask
+  // gets the list.
+  if (await shouldSendOnboarding(user)) {
+    trace.onboarding = true;
+    return {
+      reply: buildOnboardingReply(),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
   return {
-    reply:
-      '😊 *Nera bisa bantu kamu:*\n\n' +
-      '- Catat transaksi - tinggal chat, misal "jajan 20rb"\n' +
-      '- Atur transaksi - cari, ubah, hapus, atau undo kapan aja\n' +
-      '- Rekap - ketik "rekap" kapan aja\n' +
-      '- Goals - bilang "mau nabung buat ..."\n' +
-      '- Dashboard - ketik "dashboard" buat connect\n\n' +
-      'Nggak perlu format khusus, ngobrol biasa aja 👍',
+    reply: buildHelpReply(),
     newState: STATES.IDLE,
     newStateContext: {},
   };
@@ -2642,6 +2779,32 @@ async function handleProductQuestionIntent(user, rawText, trace) {
 const LINK_TOKEN_EXPIRY_MINUTES = 10; // matches app/link/route.ts's cookie maxAge on the frontend
 
 /**
+ * P2-C: the verified production frontend (checked live 2026-10-04: "/" ->
+ * 307 -> /login -> 200) - the URL web-discovery replies must never drift
+ * from, and the fallback when a production instance has no
+ * DASHBOARD_BASE_URL configured (a localhost link would be dead for every
+ * real user). The SAME verified domain is mirrored in
+ * PRODUCT_KNOWLEDGE.md section 7 and ai/productQuestionPrompt.js - keep
+ * them in sync.
+ */
+const PRODUCTION_DASHBOARD_URL = 'https://personal-finance-assistant-delta.vercel.app';
+
+/**
+ * Single source for the dashboard address: configured value first (SPEC
+ * deployment config), then - only when actually running in production -
+ * the verified URL above; a local dev without the var keeps today's
+ * localhost fallback so the local link flow still points at the local
+ * frontend. Read at CALL time, never at module load: tests set the env
+ * var per-test.
+ */
+function dashboardBaseUrl() {
+  if (process.env.DASHBOARD_BASE_URL) return process.env.DASHBOARD_BASE_URL;
+  return process.env.NODE_ENV === 'production'
+    ? PRODUCTION_DASHBOARD_URL
+    : 'http://localhost:3000';
+}
+
+/**
  * Informational answer for a QUESTION about the dashboard / login
  * (Phase 2, Priority 5): facts only, no credential. Sources: SPEC 2.5 +
  * PRODUCT_KNOWLEDGE section 8 (Google login, first link comes from the
@@ -2649,22 +2812,58 @@ const LINK_TOKEN_EXPIRY_MINUTES = 10; // matches app/link/route.ts's cookie maxA
  * (google_id) for the linked/unlinked state, and the configured
  * DASHBOARD_BASE_URL for the address. Nothing about the account, the
  * provider or the data is invented.
+ *
+ * P2-C additions (asked-for facts only, still zero credential):
+ *   - an EMAIL question gets the honest answer - the users table has no
+ *     email column, so Nera cannot see one and must not guess (section 4);
+ *   - a "kenapa ... login?" question gets PRODUCT_KNOWLEDGE section 9's
+ *     actual reason (audit PK-11 expected the reason, not just the flow);
+ *   - the address comes from dashboardBaseUrl() - production can no longer
+ *     fall back to a dead localhost link.
+ * Structured tier: heading + bullets, capped at 5 (RESPONSE_FORMATTING).
  */
-function buildDashboardInfoReply(user) {
-  const baseUrl = process.env.DASHBOARD_BASE_URL || 'http://localhost:3000';
-  if (user.google_id) {
-    return (
-      `*Dashboard Nera*\n- ${baseUrl}\n\n` +
-      'Akun kamu udah tersambung ke Google kok, jadi tinggal buka alamatnya ' +
-      'dan login pakai akun Google yang sama ya.'
+function buildDashboardInfoReply(user, rawText = '') {
+  const lower = String(rawText ?? '').toLowerCase();
+  const baseUrl = dashboardBaseUrl();
+
+  const wantsWhy = /\b(?:kenapa|mengapa|kenape|ngapain)\b/.test(lower);
+  const asksEmail = /\bemail\b/.test(lower);
+
+  const extras = [];
+  if (asksEmail) {
+    extras.push(
+      '- Soal email: Nera nggak bisa lihat alamat email dari sini - yang ' +
+        'nyambung ke WhatsApp cuma nomor kamu, dan Nera nggak akan nebak.',
     );
   }
-  return (
-    `*Dashboard Nera*\n- ${baseUrl}\n\n` +
-    '- Login pertama kali lewat link connect dari bot: ketik "dashboard" atau ' +
-    '"login", linknya berlaku singkat dan sekali pakai.\n' +
-    '- Sesudah tersambung, login berikutnya tinggal pakai Google seperti biasa.'
-  );
+  if (wantsWhy) {
+    extras.push(
+      '- Kenapa lewat WhatsApp dulu? Karena nomor kamu itu identitas utama ' +
+        'di sini, dashboard cuma pelengkap - sekaligus lapisan keamanan ' +
+        'biar nggak sembarang akun bisa nyambung ke data orang.',
+    );
+  }
+
+  const header = `*Dashboard Nera*\n- ${baseUrl}\n\n`;
+
+  if (user.google_id) {
+    // Linked: URL + up to both extras still fits under the 5-bullet cap.
+    const linkedFacts =
+      'Akun kamu udah tersambung ke Google kok, jadi tinggal buka alamatnya ' +
+      'dan login pakai akun Google yang sama ya.';
+    const extraBlock = extras.length ? `${extras.join('\n')}\n\n` : '';
+    return header + extraBlock + linkedFacts;
+  }
+
+  const base = [
+    '- Login pakai akun Google.',
+    '- Pertama kali? Ketik "dashboard" atau "login", nanti dikirim link ' +
+      'connect dari bot - linknya berlaku singkat dan sekali pakai.',
+    '- Sesudah tersambung, login berikutnya tinggal pakai Google seperti biasa.',
+  ];
+  // URL + at most one asked-for extra + 3 base = never more than 5.
+  const bullets = [...extras.slice(0, 1), ...base];
+  return header + `${bullets.join('\n')}`;
 }
 
 /**
@@ -2686,10 +2885,18 @@ function buildDashboardInfoReply(user) {
  * for the plain command form ("dashboard", "login dong").
  */
 async function handleDashboardLinkIntent(user, rawText, trace) {
-  if (isQuestionMessage(rawText)) {
+  // P2-C: a QUESTION ("webnya mana?") and a bare web/link request ("kasih
+  // link web dong", "buka website") are DISCOVERY - answered with the
+  // address and flow. Only the explicit connect commands ("dashboard",
+  // "login") mint the single-use credential.
+  const isWebDiscovery =
+    /\b(?:link(?:nya)?|url(?:nya)?|web(?:site)?(?:nya|ku|mu)?|situs(?:nya)?)\b/i.test(
+      String(rawText ?? ''),
+    );
+  if (isQuestionMessage(rawText) || isWebDiscovery) {
     trace.dashboardLinkOutcome = 'informational';
     return {
-      reply: buildDashboardInfoReply(user),
+      reply: buildDashboardInfoReply(user, rawText),
       newState: STATES.IDLE,
       newStateContext: {},
     };
@@ -2713,8 +2920,7 @@ async function handleDashboardLinkIntent(user, rawText, trace) {
   });
   trace.dashboardLinkOutcome = 'token_issued';
 
-  const baseUrl = process.env.DASHBOARD_BASE_URL || 'http://localhost:3000';
-  const link = `${baseUrl}/link?token=${token}`;
+  const link = `${dashboardBaseUrl()}/link?token=${token}`;
 
   return {
     reply: `Nih link buat connect ke dashboard-nya, berlaku ${LINK_TOKEN_EXPIRY_MINUTES} menit ya:\n${link}`,
@@ -2723,7 +2929,18 @@ async function handleDashboardLinkIntent(user, rawText, trace) {
   };
 }
 
-async function handleGreetingIntent() {
+async function handleGreetingIntent(user, rawText, trace) {
+  // P2-C: first contact (onboarding incomplete) opens with the one-time
+  // introduction instead of the small-talk greeting; every later greeting
+  // - and every user who has ever recorded anything - keeps the original.
+  if (await shouldSendOnboarding(user)) {
+    trace.onboarding = true;
+    return {
+      reply: buildOnboardingReply(),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
   return {
     reply: pickRandom(GREETING_REPLIES),
     newState: STATES.IDLE,

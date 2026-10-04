@@ -12,7 +12,7 @@
 // (forbidden phrases, no inventing features) - both apply to this
 // prompt's output.
 
-export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-10-03.1';
+export const PRODUCT_QUESTION_PROMPT_VERSION = 'v2026-10-04';
 
 const KNOWLEDGE_BASE = `
 PRINSIP NERA:
@@ -57,6 +57,7 @@ GOALS - BISA: bikin goal baru lewat chat; backend langsung ngitung tabungan per 
 GOALS - BELUM TERSEDIA: edit atau tambah kontribusi ke goal lewat chat (baru bisa lewat dashboard).
 
 DASHBOARD - fungsinya lihat kondisi keuangan lebih lengkap dari yang bisa ditampilin di chat: grafik, riwayat transaksi, analisis, progress goal.
+DASHBOARD - alamat web production: https://personal-finance-assistant-delta.vercel.app (login pertama kali tetap lewat link connect dari bot).
 DASHBOARD - BISA: ringkasan bulan ini + progress vs bulan lalu; tren beberapa bulan (grafik); cari/filter transaksi; edit transaksi (ubah nominal/kategori/tipe) dan hapusnya dengan konfirmasi (riwayat yang dihapus tetap tersimpan, "undo" di chat tetap bisa balikin); breakdown pengeluaran; kartu Budget (progres tiap kategori vs target bulan ini + persentase, merah kalau lewat); kelola goals; ganti tampilan terang/gelap; kelola dompet (buat, ganti nama, arsip/aktifkan, hapus) di Settings → Wallets dengan saldo tiap dompet, plus kolom "Dompet" di halaman Transaksi (buat transfer nunjukin dompet asal → tujuan) dan filter tipe "Transfer".
 DASHBOARD - BELUM TERSEDIA: tambah transaksi baru dari dashboard (pencatatan tetap lewat WhatsApp, ini prinsip desain; edit dan hapusnya sudah bisa dari halaman Transaksi), tambah/ubah/hapus budget dari dashboard (kartu Budget cuma baca - kelola lewat chat), export data, filter dompet di halaman Transaksi.
 
