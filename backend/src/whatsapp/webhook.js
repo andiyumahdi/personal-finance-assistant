@@ -13,19 +13,32 @@ import { handleIncomingMessage } from './messageHandler.js';
 import { sendMessage } from './sendMessage.js';
 import { logger } from '../utils/logger.js';
 import { inboundRateLimiter } from '../utils/rateLimit.js';
+import { constantTimeEqual } from '../utils/constantTimeEqual.js';
 
 /**
  * GET /webhook - Meta's verification handshake. Confirms
  * hub.verify_token matches WHATSAPP_VERIFY_TOKEN, then echoes back
  * hub.challenge - Meta's standard one-time handshake, triggered when the
  * webhook URL is configured in the Meta App dashboard.
+ *
+ * Fail-closed: verification only succeeds when a NON-EMPTY token was
+ * configured AND the request carries an exact match. Without that guard,
+ * `undefined === undefined` would pass when both the env var and the query
+ * param are absent - accepting an unauthenticated handshake (and echoing
+ * back an attacker-chosen challenge).
  */
 export function handleWebhookVerification(query) {
   const mode = query['hub.mode'];
   const token = query['hub.verify_token'];
   const challenge = query['hub.challenge'];
+  const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN;
 
-  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+  if (
+    mode === 'subscribe' &&
+    typeof expectedToken === 'string' &&
+    expectedToken.length > 0 &&
+    constantTimeEqual(token, expectedToken)
+  ) {
     return { status: 200, body: challenge };
   }
 

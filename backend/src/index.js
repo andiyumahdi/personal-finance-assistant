@@ -24,6 +24,10 @@ import { runWeeklyRecap } from './scheduler/weeklyRecap.js';
 import { runMonthlyRecap } from './scheduler/monthlyRecap.js';
 import { runDailyReminder } from './scheduler/dailyReminder.js';
 import { logger } from './utils/logger.js';
+import { validateEnv } from './config/validateEnv.js';
+import { probeDatabase, buildHealthReport } from './utils/health.js';
+import { createShutdownHandler } from './utils/shutdown.js';
+import { isAuthorizedCronRequest } from './utils/cronAuth.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -72,8 +76,10 @@ app.post('/webhook', async (req, res) => {
 // trigger, so a simple header check is proportionate (no need for full
 // auth infrastructure at this project's scale).
 app.post('/internal/recap', async (req, res) => {
+  // Fail-closed AND timing-safe - see utils/cronAuth.js: an unset secret
+  // can never match an absent header, and the compare leaks no timing.
   const providedSecret = req.get('X-Internal-Secret');
-  if (!process.env.INTERNAL_CRON_SECRET || providedSecret !== process.env.INTERNAL_CRON_SECRET) {
+  if (!isAuthorizedCronRequest(providedSecret, process.env.INTERNAL_CRON_SECRET)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -98,13 +104,22 @@ app.post('/internal/recap', async (req, res) => {
   }
 });
 
-app.get('/healthz', (req, res) => {
-  res.json({
-    status: 'ok',
+app.get('/healthz', async (req, res) => {
+  // SPECIFICATION.md section 11.3: connection status + dead-man's-switch
+  // timestamps. The DB probe decides the HTTP status (503 when Supabase is
+  // unreachable) so an external monitor gets a real failure signal instead
+  // of a hardcoded 200.
+  const database = await probeDatabase();
+  if (!database.ok) {
+    logger.warn('Health probe failed', { error: database.error, latencyMs: database.latencyMs });
+  }
+  const report = buildHealthReport({
+    database,
     lastSuccessfulMessageAt,
     lastRecapRunAt,
     lastDailyReminderRunAt,
   });
+  res.status(report.httpStatus).json(report.body);
 });
 
 // Required by Meta before the App can be published (Meta mandates a
@@ -114,9 +129,28 @@ app.get('/privacy-policy', (req, res) => {
 });
 
 function main() {
-  app.listen(PORT, () => {
+  // Fail fast on missing required env (SPECIFICATION.md section 9):
+  // better to crash at boot with a list of names than to serve requests
+  // that fail one missing variable at a time. Warnings (optional vars)
+  // are logged but don't block startup.
+  const { missing, warnings } = validateEnv();
+  if (missing.length > 0) {
+    logger.error('Missing required environment variables - refusing to start', { missing });
+    process.exit(1);
+  }
+  for (const warning of warnings) {
+    logger.warn('Environment warning', { warning });
+  }
+
+  const server = app.listen(PORT, () => {
     logger.info('Backend listening', { port: PORT });
   });
+
+  // Render sends SIGTERM on every deploy/restart - drain in-flight
+  // requests instead of cutting them mid-webhook (see utils/shutdown.js).
+  const shutdown = createShutdownHandler({ server, logger });
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 main();

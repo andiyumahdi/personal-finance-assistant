@@ -48,6 +48,46 @@ describe('handleWebhookVerification (pure, no network)', () => {
     });
     assert.equal(result.status, 403);
   });
+
+  // Fail-closed regressions: the old `token === process.env.WHATSAPP_VERIFY_TOKEN`
+  // returned 200 whenever BOTH sides were undefined - an unauthenticated
+  // handshake that also echoed back an attacker-chosen challenge.
+  test('REGRESSION: unset env token + absent query token -> 403, not 200', () => {
+    delete process.env.WHATSAPP_VERIFY_TOKEN;
+    const result = handleWebhookVerification({
+      'hub.mode': 'subscribe',
+      'hub.challenge': 'attacker-chosen',
+    });
+    assert.equal(result.status, 403);
+    assert.notEqual(result.body, 'attacker-chosen');
+  });
+
+  test('REGRESSION: empty env token never matches, even an empty query token', () => {
+    process.env.WHATSAPP_VERIFY_TOKEN = '';
+    const result = handleWebhookVerification({
+      'hub.mode': 'subscribe',
+      'hub.verify_token': '',
+      'hub.challenge': 'abc123',
+    });
+    assert.equal(result.status, 403);
+  });
+
+  test('configured env token + missing query token -> 403', () => {
+    const result = handleWebhookVerification({
+      'hub.mode': 'subscribe',
+      'hub.challenge': 'abc123',
+    });
+    assert.equal(result.status, 403);
+  });
+
+  test('non-string query token (array param) does not match', () => {
+    const result = handleWebhookVerification({
+      'hub.mode': 'subscribe',
+      'hub.verify_token': ['test-verify-token', 'test-verify-token'],
+      'hub.challenge': 'abc123',
+    });
+    assert.equal(result.status, 403);
+  });
 });
 
 describe('verifyWebhookSignature (pure, no network)', () => {
