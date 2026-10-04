@@ -29,15 +29,25 @@ import * as budgetsDomain from '../domain/budgets.js';
 import * as transfersDomain from '../domain/transfers.js';
 import * as goalsDomain from '../domain/goals.js';
 import * as contextDomain from '../domain/context.js';
-import { calculateTotals } from '../domain/summary.js';
+import { calculateTotals, calculateCategoryBreakdown } from '../domain/summary.js';
+import { WIB_OFFSET_MS } from '../domain/budgets.js';
 import * as insightsDomain from '../domain/insights.js';
 import { CATEGORIES, isDefaultCategory } from '../config/categories.js';
+import {
+  parseRecapPeriod,
+  hasPeriodSignal,
+  INDONESIAN_MONTHS,
+} from './recapPeriod.js';
 
 export const STATES = {
   IDLE: 'IDLE',
   AWAITING_DIRECTION: 'AWAITING_DIRECTION',
   AWAITING_GOAL_TARGET: 'AWAITING_GOAL_TARGET',
   AWAITING_GOAL_DEADLINE: 'AWAITING_GOAL_DEADLINE',
+  // Phase 2 (Priority 7): only reached when the goal's TITLE could not be
+  // derived from the request ("mau nabung" with no object) - the flow asks
+  // for it instead of writing a hardcoded placeholder title.
+  AWAITING_GOAL_TITLE: 'AWAITING_GOAL_TITLE',
   // Sprint C (Transaction Management): the two new states follow the same
   // AWAITING_* pattern as the existing ones (docs/SPECIFICATION.md 12.1) -
   // no parallel mechanism.
@@ -59,6 +69,13 @@ export const STATES = {
   // budget create or amount update executes immediately (an amount is
   // trivially editable afterwards, so it never needs a "ya").
   AWAITING_BUDGET_CONFIRM: 'AWAITING_BUDGET_CONFIRM',
+  // Phase 2 (Priority 7): goal rename and goal delete both confirm before
+  // they touch anything - same AWAITING_* pattern, same "ya"/"batal"
+  // contract as the category/wallet/budget confirm states above. A goal is
+  // the one row the user names in prose ("mau nabung buat ..."), so the
+  // target can be ambiguous; nothing is renamed or removed until an
+  // explicit yes.
+  AWAITING_GOAL_CONFIRM: 'AWAITING_GOAL_CONFIRM',
 };
 
 // ---------------------------------------------------------------------------
@@ -442,6 +459,91 @@ function isSearchRequest(lower) {
   return SEARCH_KEYWORDS.some((kw) => containsWord(lower, kw));
 }
 
+// ---------------------------------------------------------------------------
+// P2-A (Read/List Intelligence): reading TRANSACTIONS as a LIST.
+//
+// The audit found list/search-shaped asks falling into the generic recap or
+// into 'unclear' ("lihat transaksi gue" -> unclear, "tunjukin pengeluaran
+// gue" -> totals recap, "transaksi terakhir gue apa?" -> "ketemu 0"). A
+// list is a DIFFERENT read than a recap: it shows the real rows (amount,
+// category, date, type, wallet), while the recap reports period totals.
+// Same read-only contract as every Priority 4 read: no persona call, no
+// write, numbers only from listTransactions scoped to the caller.
+//
+// Deliberate boundaries (each one protects an existing contract):
+//   - a TOTALS ask ("berapa pengeluaran bulan ini?", "pengeluaran gue
+//     tanggal 7 apa aja?") stays a recap - that is the P1 period fix;
+//   - an own amount leaves the list path ("pengeluaran bulan ini 50rb" is
+//     kept by the recap keyword slot exactly as before P2-A - no write
+//     phrasing ever changes behavior here);
+//   - explicit recap words ("rekap ...", "habis berapa", "paling banyak")
+//     outrank any list phrasing;
+//   - "cari ..." keeps Sprint C's search contract, undo/delete/edit/
+//     transfer/manage verbs keep theirs - a read never swallows a write.
+// ---------------------------------------------------------------------------
+
+/** Words that name the transaction data surface (list OR recap territory). */
+const TRANSACTION_DOMAIN_PATTERN = /\b(?:transaksi|mutasi|riwayat|pengeluaran|pemasukan)\b/;
+/**
+ * The subset that is ONLY ever a data-surface word (never a recap keyword),
+ * so it may answer even a question: "transaksi terakhir gue apa?".
+ */
+const TRANSACTION_NOUN_PATTERN = /\b(?:transaksi|mutasi|riwayat)\b/;
+const LIST_VERB_PATTERN =
+  /\b(?:lihat|liat|lihatin|tunjukin|tunjukkan|tampilkan|tampilin|perlihatkan|sebutkan|daftar|list|cek)\b/;
+const LIST_HINT_PATTERN = /\b(?:terakhir|terbaru|apa aja|semua)\b/;
+/** Recap words that outrank any list phrasing. */
+const RECAP_OVERRIDES_PATTERN =
+  /\b(?:rekap|boros|kondisi keuangan|total|jumlah|paling\s+banyak|terbanyak|terbesar)\b|habis\s+berapa/;
+
+/**
+ * Pure, no I/O. Is this message asking for the ROWS (a list), rather than
+ * for period totals (a recap), for a write, or for an explanation?
+ */
+export function isTransactionListRequest(rawText) {
+  const lower = String(rawText ?? '').toLowerCase().trim();
+  if (!lower) return false;
+  // "cari tau ..." is filler, not a lookup (same carve-out as isSearchRequest).
+  if (/\b(?:cari|nyari)\s+(?:tau|tahu)\b/.test(lower)) return false;
+  if (!TRANSACTION_DOMAIN_PATTERN.test(lower)) return false;
+  if (RECAP_OVERRIDES_PATTERN.test(lower)) return false;
+  if (parseMoneyAmount(lower) !== null) return false;
+  // Belt and braces: the router checks these slots first anyway, and a read
+  // must never swallow a write/search/manage phrasing.
+  if (
+    isUndoRequest(lower) ||
+    isDeleteRequest(lower) ||
+    isEditRequest(lower) ||
+    isSearchRequest(lower) ||
+    isTransferRequest(lower) ||
+    isCategoryManageRequest(lower) ||
+    isWalletManageRequest(lower) ||
+    isBudgetManageRequest(lower) ||
+    isGoalStartRequest(lower) ||
+    isGoalManageRequest(lower)
+  ) {
+    return false;
+  }
+  // (a) an explicit list verb: "tunjukin pengeluaran gue", "lihat transaksi
+  //     tanggal 7", "cek transaksi".
+  if (LIST_VERB_PATTERN.test(lower)) return true;
+  // "riwayat" / "mutasi" are list-ONLY words (never a recap keyword, never
+  // a write), so they answer directly: "riwayat gue dong".
+  if (/\b(?:mutasi|riwayat)\b/.test(lower)) return true;
+  // (b) a data-surface noun + a period or a recency/list hint: "transaksi
+  //     hari ini", "transaksi terakhir gue apa?".
+  if (TRANSACTION_NOUN_PATTERN.test(lower)) {
+    if (hasPeriodSignal(lower) || LIST_HINT_PATTERN.test(lower)) return true;
+  }
+  // (c) a bare, non-question statement naming the data + a period:
+  //     "pengeluaran bulan ini" lists those rows - an ASK with the same
+  //     words ("berapa pengeluaran bulan ini") still goes to the recap.
+  if (!isQuestionMessage(lower) && !looksLikeTransaction(lower) && hasPeriodSignal(lower)) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Sprint D1: is this message about creating/renaming/deleting a CATEGORY
  * (as opposed to editing a transaction's category or deleting a
@@ -518,6 +620,184 @@ function isTransferRequest(lower) {
   return containsWord(lower, 'dari') && containsWord(lower, 'ke');
 }
 
+// --- Phase 2 (Chat Intelligence fix) routing signals -----------------------
+//
+// Priority 3: a QUESTION must never reach a write flow. Priority 4: read
+// and list requests are answered with backend facts (they are safe reads,
+// so they are never gated). Priority 5: a HOW-to question is answered from
+// product knowledge, never by opening a form or minting a login link.
+// All of it is pure and deterministic - the classifier is only ever a
+// fallback for what no rule below can decide.
+
+const READ_VERBS = [
+  'daftar', 'lihat', 'cek', 'tampilkan', 'tunjukin', 'tunjukkan',
+  'sebutkan', 'list',
+];
+const READ_HINTS =
+  /\b(berapa|brp|apa aja|ada apa|semua|sisa|terpakai|lewat|belum|udah berapa|sudah berapa|jumlah|progress|persen|status|kapan|di mana|dimana)\b/;
+
+/**
+ * "saldo" / "rekening" name the same data surface as "dompet"/"wallet" -
+ * in the suffixed forms users actually type too ("BRI gue saldonya
+ * berapa?"), which a bare \bsaldo\b would never match.
+ */
+const BALANCE_WORD_PATTERN = /\b(?:saldo(?:nya|ku|mu)?|rekening(?:nya|ku|mu)?|rek(?:nya)?)\b/;
+
+/** Trailing question words that make a message a question even without "?". */
+const QUESTION_ANYWHERE =
+  /\b(?:gimana|bagaimana|gmn|kenapa|mengapa|kapan|di\s+mana|dimana|berapa|brp)\b/;
+/** "... bisa ... nggak" is a question wherever it appears. */
+const BISA_NEGATION_SHAPE = /\bbisa\b[^?]{0,60}\b(?:nggak|ga|gak|tidak|tdk)\b/;
+
+/**
+ * Phase 2 (Priority 3): is this message a QUESTION? Deliberately generous
+ * ("?" at the end, a question word anywhere, the "bisa ... nggak" shape):
+ * the only use of this signal is to BLOCK write intents, and a false
+ * positive merely routes to knowledge instead of opening a form, while a
+ * false negative is an unintended write.
+ */
+export function isQuestionMessage(rawText) {
+  const lower = String(rawText ?? '').toLowerCase().trim();
+  if (!lower) return false;
+  if (lower.endsWith('?')) return true;
+  if (QUESTION_ANYWHERE.test(lower)) return true;
+  if (BISA_NEGATION_SHAPE.test(lower)) return true;
+  return false;
+}
+
+/** Words that mark "how do I ...?" rather than "give me data ...". */
+const CAPABILITY_PREFIX =
+  /^\s*(?:cara|caranya|gimana\s+cara|gmn\s*cara|bagaimana\s*cara|boleh|apakah\s+(?:bisa|boleh|dapat|dapatkah|harus|perlu)|harus|perlu|bisa|bisakah)\b/;
+
+/**
+ * Phase 2 (Priority 5): a HOW-to / capability question - the user is asking
+ * about the product, not about their own data. A message that names a
+ * PERIOD is data ("apakah pengeluaran bulan ini besar?" stays a recap), so
+ * the period check runs before anything else.
+ */
+/** Trailing "<feature> itu gimana?" - "budget itu gimana?" / "transfer itu
+ *  gimana?" asks how a feature works, not for the user's own data. Capped at
+ *  60 chars before "itu" and paired with NO money amount, so an amount-bearing
+ *  statement ("jajan 20rb itu gimana") can never be swallowed by it. */
+const TRAILING_ITU_GIMANA = /^(?:.{3,60}?\s)itu\s+gimana\s*\??$/;
+
+export function isCapabilityQuestion(rawText) {
+  const lower = String(rawText ?? '').toLowerCase().trim();
+  if (!isQuestionMessage(lower)) return false;
+  if (hasPeriodSignal(lower)) return false;
+  if (CAPABILITY_PREFIX.test(lower)) return true;
+  if (BISA_NEGATION_SHAPE.test(lower)) return true;
+  if (TRAILING_ITU_GIMANA.test(lower) && parseMoneyAmount(lower) === null) return true;
+  return /\bbisakah\b|\bdapatkah\b/.test(lower);
+}
+
+// Goal container rules (Priority 7): the word "goal" plus a dedicated verb
+// - same discipline as the D1/D2/D3 container rules, goal START language
+// ("mau nabung buat ...") excluded so it keeps its own flow.
+const GOAL_WORD_PATTERN = /\bgoal(?:nya)?\b/;
+const GOAL_DELETE_VERBS = ['hapus', 'delete', 'buang'];
+const GOAL_RENAME_PATTERN =
+  /\brename\b|\bganti\s+nama\b|\bubah\s+nama\b|\bubah\s+judul\b/;
+
+function isGoalManageRequest(lower) {
+  if (!GOAL_WORD_PATTERN.test(lower)) return false;
+  if (GOAL_RENAME_PATTERN.test(lower)) return true;
+  return GOAL_DELETE_VERBS.some((verb) => containsWord(lower, verb));
+}
+
+/** Priority 4: reads/list/status for the containers D1-D4 manage. */
+function isCategoryReadRequest(lower) {
+  if (isExcludedFromSprintC(lower)) return false;
+  if (!CATEGORY_WORD_PATTERN.test(lower)) return false;
+  if (isCategoryManageRequest(lower)) return false;
+  if (parseMoneyAmount(lower) !== null) return false;
+  // "kategori gue" / "kategorinya dong" - short, opens with the container
+  // word: that is a list request.
+  if (/^kategori(?:nya)?\b/.test(lower) && lower.split(/\s+/).length <= 4) return true;
+  return READ_VERBS.some((verb) => containsWord(lower, verb)) || READ_HINTS.test(lower);
+}
+
+function isWalletReadRequest(lower) {
+  if (isExcludedFromSprintC(lower)) return false;
+  if (isWalletManageRequest(lower)) return false;
+  // A transaction that mentions a wallet ("beli dompet baru 200rb") must
+  // never be swallowed by a read.
+  if (parseMoneyAmount(lower) !== null) return false;
+  if (!WALLET_WORD_PATTERN.test(lower) && !BALANCE_WORD_PATTERN.test(lower)) return false;
+  // "saldo BRI" / "dompet gue" - a short message that OPENS with the wallet
+  // word and says nothing else is a status/list request.
+  if (/^(?:dompet|wallet|saldo|rekening|rek)\b/.test(lower) && lower.split(/\s+/).length <= 4) {
+    return true;
+  }
+  return READ_VERBS.some((verb) => containsWord(lower, verb)) || READ_HINTS.test(lower);
+}
+
+function isBudgetReadRequest(lower) {
+  if (isExcludedFromSprintC(lower)) return false;
+  if (!BUDGET_WORD_PATTERN.test(lower)) return false;
+  if (isBudgetManageRequest(lower)) return false;
+  if (parseMoneyAmount(lower) !== null) return false;
+  // "budget gue" / "budgetnya gimana" - short, opens with the container
+  // word: that is a status/list request.
+  if (/^budget(?:nya)?\b/.test(lower) && lower.split(/\s+/).length <= 4) return true;
+  return READ_VERBS.some((verb) => containsWord(lower, verb)) || READ_HINTS.test(lower);
+}
+
+function isGoalReadRequest(lower) {
+  if (!GOAL_WORD_PATTERN.test(lower)) return false;
+  if (isGoalStartRequest(lower) || isGoalManageRequest(lower)) return false;
+  if (parseMoneyAmount(lower) !== null) return false;
+  // "goal gue" / "goal gue prediksinya gimana" - short, opens with the
+  // container word: that is a status/list request.
+  if (/^goal(?:nya)?\b/.test(lower) && lower.split(/\s+/).length <= 5) return true;
+  return READ_VERBS.some((verb) => containsWord(lower, verb)) || READ_HINTS.test(lower);
+}
+
+/**
+ * "nabung berapa per bulan" asks for the required monthly saving of the
+ * user's goals - no "goal" word in the sentence, but clearly a status read.
+ */
+function isSavingsPlanRequest(lower) {
+  if (!containsWord(lower, 'nabung')) return false;
+  if (!/\b(?:brp|berapa)\b/.test(lower)) return false;
+  return /\bper\s*bulan\b|\btiap\s*bulan\b|\bbulanan\b/.test(lower);
+}
+
+/**
+ * Priority 5 routing: words that mean the user is asking about the product
+ * surface (login / web / account) vs. about a product capability area.
+ * Only ever consulted from a how-to/question context, so a plain command
+ * ("login", "dashboard") still reaches its own slot further down.
+ */
+const LINK_WORD_PATTERN =
+  /\b(?:login|masuk|link|url|web|website|dashboard|akun|account|google|sso|password|sandi|email)\b/;
+const KNOWLEDGE_DOMAIN_PATTERN =
+  /\b(?:wallet|dompet|saldo|rekening|budget|kategori|goal|transfer|transaksi|rekap|pengeluaran|pemasukan|nabung|login|akun|account|dashboard|link|url|web|website|google|password|sandi|email|whatsapp|wa)\b/;
+
+/** Spending words that make a period message a recap instead of a record. */
+const SPENDING_WORD_PATTERN =
+  /\b(?:keluar|pengeluaran|pengeluar|boros|habis|habisin|terpakai|jajan|belanja|paling\s+banyak|terbanyak|terbesar)\b/;
+/** Follow-up shapes that narrow whatever recap is on screen. */
+const RECAPPY_FOLLOW_UP = /^(?:yang|yg|kalau|gimana\s+kalau|rekap|terus)\b/;
+
+/**
+ * Phase 2 (Priority 1): a period-scoped recap question that carries no
+ * RECAP_KEYWORD - "brp duit gue keluar hari ini", "yang bulan lalu gimana",
+ * "Kalau bulan ini?". Own amount => transaction data; a bare period +
+ * spending verb with no question shape stays on the recording path
+ * ("jajan bulan ini" still asks for the amount, exactly as before).
+ */
+function isPeriodScopedRecap(lower) {
+  if (parseMoneyAmount(lower) !== null) return false;
+  if (!hasPeriodSignal(lower)) return false;
+  if (SPENDING_WORD_PATTERN.test(lower)) {
+    if (!isQuestionMessage(lower) && looksLikeTransaction(lower)) return false;
+    return true;
+  }
+  if (lower.endsWith('?')) return true;
+  return RECAPPY_FOLLOW_UP.test(lower);
+}
+
 /**
  * Cheap, deterministic intent pre-filter. Runs BEFORE any Gemini call so
  * that obviously-non-transaction messages (recap requests, greetings,
@@ -526,44 +806,88 @@ function isTransferRequest(lower) {
  * nominalnya" fallback for things that were never meant to be a
  * transaction in the first place.
  *
- * Ordering: Sprint D1's category_manage runs first - it needs the word
- * "kategori" plus a dedicated verb, and would otherwise be swallowed by
- * the transaction rules below ("hapus kategori Kopi" -> delete,
- * "ganti nama kategori ..." -> edit). Then Sprint D2's wallet_manage,
- * same discipline with the words "dompet"/"wallet" - and behind
- * category_manage on purpose, so "tambah kategori Dompet Baru" (a
- * CATEGORY whose name mentions a wallet) stays a category command. Then
- * Sprint D3's budget_manage (the word "budget" + a dedicated verb),
- * behind both for the same reason - "tambah kategori Budget Baru"
- * creates a CATEGORY named after budgets, and "tambah dompet Budget"
- * creates a WALLET - and ahead of Sprint C so "hapus budget ..." /
- * "ubah budget ..." are never swallowed by the transaction rules. Then
- * Sprint C intents
- * (undo/delete/edit/search) - they are explicit action verbs that must
- * win over the older keyword blocks ("cari pengeluaran 20rb" would
- * otherwise match recap's "pengeluaran"; "hapus yang 25rb" would
- * otherwise hit the transaction digit gate). The remaining order (recap
- * -> goal -> help -> dashboard -> transfer -> transaction -> greeting ->
- * small_talk) is unchanged from Sprint B except for Sprint D4's ONE new
- * slot: transfer sits behind dashboard_link (every explicit intent
- * above it wins by slot position) and ahead of the transaction gate, so
- * a structured wallet-to-wallet message is recorded as a single
- * transfer row instead of being pushed through extraction - and ahead
- * of greeting/small_talk for exactly the reason the transaction gate is
- * ("pagi, pindah 500rb dari BRI ke Mandiri" must still be a transfer).
+ * Phase 2 order (all slots before it are pure and user-scoped):
+ *   1. READS of the data containers (category/wallet/budget/goal) - a read
+ *      is always safe, so it is never gated - UNLESS the message is a
+ *      how-to question, which slot 4 then owns. These come first because a
+ *      read-shaped message that also contains a manage verb ("tambah
+ *      budget ... dong") has no amount to record, and because the read is
+ *      the honest backend answer the old router used to drop to 'unclear'.
+ *   2. WRITES of those containers, gated on !isQuestionMessage - this is
+ *      the Priority 3 guard: no question may ever open a write flow, while
+ *      "tambah wallet BRI" (a statement) still creates the wallet.
+ *   3. Sprint C (undo/delete/edit/search) - unchanged: explicit action
+ *      verbs must win over the older keyword blocks ("cari pengeluaran
+ *      20rb" would otherwise match recap's "pengeluaran"; "hapus yang
+ *      25rb" would otherwise hit the transaction digit gate).
+ *   4. Knowledge gate (Priority 5): link/login questions are answered
+ *      informationally, capability questions come from product knowledge.
+ *   5. recap (keyword, then the Priority 1 period+spending rule) ->
+ *      goal_start -> help -> dashboard_link -> transfer -> transaction ->
+ *      greeting -> small_talk - the original Sprint B/D4 order, with
+ *      transfer still behind dashboard_link and ahead of the transaction
+ *      gate ("pagi, pindah 500rb dari BRI ke Mandiri" is a transfer).
  */
 export function detectIntent(rawText) {
   const lower = rawText.toLowerCase().trim();
 
-  if (isCategoryManageRequest(lower)) return 'category_manage';
-  if (isWalletManageRequest(lower)) return 'wallet_manage';
-  if (isBudgetManageRequest(lower)) return 'budget_manage';
+  // Priority 5: a how-to question is about the PRODUCT, and a question that
+  // merely carries a manage verb ("tambah dompet BRI?") must not open a
+  // write flow either. Both are answered from knowledge below.
+  const howTo = isCapabilityQuestion(lower);
+  const questionWrite =
+    !howTo &&
+    isQuestionMessage(lower) &&
+    (isCategoryManageRequest(lower) ||
+      isWalletManageRequest(lower) ||
+      isBudgetManageRequest(lower) ||
+      isGoalManageRequest(lower));
+
+  // Priority 4: reads/list/status answer with backend facts. Safe reads are
+  // never gated - except when the user is asking HOW to do it (then the
+  // knowledge slot below owns the answer).
+  if (!howTo) {
+    if (isCategoryReadRequest(lower)) return 'category_manage';
+    if (isWalletReadRequest(lower)) return 'wallet_manage';
+    if (isBudgetReadRequest(lower)) return 'budget_manage';
+    if (isGoalReadRequest(lower) || isSavingsPlanRequest(lower)) return 'goal_manage';
+  }
+
+  // Priority 3: writes are for statements, never for questions. ("tambah
+  // wallet BRI" records; "cara tambah wallet gimana?" explains.)
+  if (!isQuestionMessage(lower)) {
+    if (isCategoryManageRequest(lower)) return 'category_manage';
+    if (isWalletManageRequest(lower)) return 'wallet_manage';
+    if (isBudgetManageRequest(lower)) return 'budget_manage';
+    if (isGoalManageRequest(lower)) return 'goal_manage';
+  }
+
   if (isUndoRequest(lower)) return 'transaction_undo';
   if (isDeleteRequest(lower)) return 'transaction_delete';
   if (isEditRequest(lower)) return 'transaction_edit';
   if (isSearchRequest(lower)) return 'transaction_search';
 
+  // Priority 5: knowledge gate - link/login questions are answered
+  // informationally (no token is minted there), capability questions come
+  // from the locked product knowledge, everything else falls through to the
+  // regular router.
+  if (howTo || questionWrite) {
+    if (LINK_WORD_PATTERN.test(lower)) return 'dashboard_link';
+    if (KNOWLEDGE_DOMAIN_PATTERN.test(lower)) return 'product_question';
+  }
+
+  // P2-A: reading rows as a LIST ("lihat transaksi gue", "transaksi hari
+  // ini", "pengeluaran bulan ini") is its own read - answered with the real
+  // rows, never with recap totals. It sits AFTER the knowledge gate (a
+  // "cara lihat transaksi?" how-to still comes from product knowledge) and
+  // AFTER Sprint C ("cari ..." keeps its search contract), but BEFORE the
+  // recap keywords ("pengeluaran" would otherwise own every list ask).
+  if (isTransactionListRequest(lower)) return 'transaction_search';
+
+  // Priority 1: recap by keyword, or by period + spending/follow-up shape.
   if (RECAP_KEYWORDS.some((kw) => lower.includes(kw))) return 'recap';
+  if (isPeriodScopedRecap(lower)) return 'recap';
+
   if (isGoalStartRequest(lower)) return 'goal_start';
   if (HELP_KEYWORDS.some((kw) => lower.includes(kw))) return 'help';
   if (DASHBOARD_LINK_KEYWORDS.some((kw) => lower === kw || lower.includes(kw))) return 'dashboard_link';
@@ -599,21 +923,6 @@ export function parseAmount(text) {
   if (unit === 'jt' || unit === 'juta') num *= 1_000_000;
   return Number.isNaN(num) ? null : num;
 }
-
-const INDONESIAN_MONTHS = {
-  januari: 1, jan: 1,
-  februari: 2, feb: 2,
-  maret: 3, mar: 3,
-  april: 4, apr: 4,
-  mei: 5,
-  juni: 6, jun: 6,
-  juli: 7, jul: 7,
-  agustus: 8, agu: 8, ags: 8,
-  september: 9, sep: 9, sept: 9,
-  oktober: 10, okt: 10,
-  november: 11, nov: 11,
-  desember: 12, des: 12,
-};
 
 /**
  * Pure, no I/O. Parses a date the user typed in one of a few common
@@ -703,6 +1012,13 @@ export function parseConfirmationReply(text) {
 const CRITERIA_NOISE_WORDS = new Set([
   'cari', 'nyari', 'search', 'transaksi', 'pengeluaran', 'pemasukan', 'riwayat',
   'yang', 'tadi', 'terakhir', 'barusan', 'kemarin', 'hari', 'ini',
+  // P2-B: a period word NAMES the window, it is not a search term. Without
+  // these, "cari pengeluaran bulan ini" extracted the keyword "bulan" and
+  // then searched raw_text for it - answering "Belum ada ..." for a month
+  // that plainly has rows. The window itself comes from parseRecapPeriod
+  // (assigned right after the criteria are built), exactly as before.
+  'bulan', 'minggu', 'pekan', 'tahun', 'lalu', 'depan', 'sebelumnya',
+  'berjalan', 'sekarang',
   'gue', 'gua', 'aku', 'saya', 'kamu', 'dong', 'nih', 'aja', 'sih', 'deh', 'ya', 'yuk',
   'semua', 'dari', 'ke', 'di', 'dan', 'sama', 'untuk', 'buat', 'bisa', 'mau',
   'nominal', 'jumlah', 'kategori', 'rupiah', 'tolong', 'mohon',
@@ -749,15 +1065,20 @@ function extractKeyword(lower) {
 }
 
 function startOfLocalDay(date) {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+  // WIB (UTC+7) calendar day, independent of the SERVER's zone: the search
+  // windows "hari ini"/"kemarin" mean the product's calendar day, and the
+  // backend runs in UTC in production - local-time day bounds would shift
+  // every window by 7 hours there.
+  const shifted = new Date(date.getTime() + WIB_OFFSET_MS);
+  const start = new Date(
+    Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) -
+      WIB_OFFSET_MS,
+  );
+  return start;
 }
 
 function endOfLocalDay(date) {
-  const d = new Date(date);
-  d.setHours(23, 59, 59, 999);
-  return d;
+  return new Date(startOfLocalDay(date).getTime() + 86_400_000 - 1);
 }
 
 /**
@@ -1152,7 +1473,10 @@ export function formatRupiah(amount) {
 function formatShortDate(isoString) {
   const date = new Date(isoString);
   if (Number.isNaN(date.getTime())) return '';
-  return `${date.getDate()} ${SHORT_MONTHS[date.getMonth()]}`;
+  // WIB (UTC+7) regardless of the server's zone - production runs UTC, and
+  // a date line shifted by 7 hours names the wrong day to the user.
+  const shifted = new Date(date.getTime() + WIB_OFFSET_MS);
+  return `${shifted.getUTCDate()} ${SHORT_MONTHS[shifted.getUTCMonth()]}`;
 }
 
 /** "Rp25.000 · Makanan & Minuman · 30 Sep" - no technical fields (id, confidence, raw_text) ever surface here. */
@@ -1255,8 +1579,31 @@ async function resolveIntent(rawText, trace) {
   trace.intentSource = 'classifier_fallback';
   const classifiedIntent = await aiProvider.classifyIntent(rawText);
   trace.classifiedIntent = classifiedIntent;
+
+  // Phase 2 (Priority 3), belt and braces: the rules already stop a
+  // question from reaching a write, and this does the same for the
+  // semantic fallback - a classifier guess must never be what opens a
+  // write flow. Capability/how-to questions about a creatable area are
+  // answered from product knowledge instead. Transaction intents are
+  // deliberately NOT overridden: Sprint C's pinned capability phrasing
+  // ("bisa edit transaksi lewat chat?") is a real, already-designed flow.
+  if (CLASSIFIER_WRITE_INTENTS.has(classifiedIntent) && isCapabilityQuestion(rawText)) {
+    trace.intentOverride = 'capability_question_blocks_write';
+    return LINK_WORD_PATTERN.test(rawText.toLowerCase()) ? 'dashboard_link' : 'product_question';
+  }
+
   return classifiedIntent;
 }
+
+/** Intents that can create/change rows - never for a capability question. */
+const CLASSIFIER_WRITE_INTENTS = new Set([
+  'goal_start',
+  'goal_manage',
+  'category_manage',
+  'wallet_manage',
+  'budget_manage',
+  'transfer',
+]);
 
 // ---------------------------------------------------------------------------
 // Per-intent handlers. Every handler shares the same signature -
@@ -1266,36 +1613,1002 @@ async function resolveIntent(rawText, trace) {
 // dispatch logic itself.
 // ---------------------------------------------------------------------------
 
-async function handleRecapIntent(user, _rawText, trace) {
-  const transactions = await transactionQueries.listTransactions(user.id);
-  const totals = calculateTotals(transactions);
-  trace.summary = totals;
+// ---------------------------------------------------------------------------
+// Phase 2 (Chat Intelligence fix - P1): recap period scoping + the adaptive
+// facts packet.
+//
+// The period is resolved by the PURE WIB parser (whatsapp/recapPeriod.js)
+// BEFORE any query runs, the resulting window is handed to
+// listTransactions, and every number that reaches the persona is computed
+// from those rows here. The persona words the facts only: it never picks
+// the period, never does date arithmetic, and never sees rows outside the
+// requested window. Plain "rekap" keeps its original all-time meaning
+// (kind 'all_time') - the Sprint E behavior is untouched.
+// ---------------------------------------------------------------------------
 
-  // Sprint E (Intelligence): the on-demand insight report rides the
-  // existing 'recap' route (the classifier enum stays 17 - the FROZEN
-  // intent set is untouched; SPECIFICATION.md section 10 phase 4 calls
-  // this "on-demand insight"). Budgets/goals reads degrade to a
-  // totals-only report rather than failing the reply - an insight
-  // partial outage must never take down the recap itself.
-  let insight = null;
-  try {
-    insight = await insightsDomain.buildInsightFacts(user.id, transactions);
-    trace.insight = insight;
-  } catch (err) {
-    trace.insightError = err.message;
+// Single list of the periods the bot understands - reused by every clarify
+// reply so a rejected request always says what DOES work.
+const RECAP_PERIOD_HINTS =
+  'Periode yang bisa: "hari ini", "kemarin", "tanggal 7", "bulan ini", ' +
+  '"bulan lalu", "minggu ini", atau "7 hari terakhir".';
+
+/**
+ * A period the parser could not resolve safely (future date, free-form
+ * range, impossible day). Static on purpose: the whole point is that we do
+ * NOT know the answer yet, so nothing here may look like a computed fact.
+ */
+function buildPeriodClarifyReply(result) {
+  switch (result.reason) {
+    case 'unsupported_range':
+      return `Rekap per rentang tanggal (misal "tanggal 1 sampai 7") belum bisa ya 🙏\n\n${RECAP_PERIOD_HINTS}`;
+    case 'future_date':
+      return `Tanggal ${result.requested} belum kejadian (hari ini ${result.today}), jadi belum ada catetannya 🙏\n\nMau rekap yang mana? ${RECAP_PERIOD_HINTS}`;
+    case 'future_period':
+      return `Periode itu masih ke depan (hari ini ${result.today}), jadi belum ada datanya 🙏\n\nMau rekap yang mana? ${RECAP_PERIOD_HINTS}`;
+    case 'invalid_day':
+      return `Tanggal ${result.day} nggak ada di ${result.monthLabel} ya 🙏 Coba cek lagi tanggalnya.`;
+    case 'invalid_month':
+      return `Bulan ${result.requested} nggak ada 🙏 Bulan validnya 1 sampai 12.`;
+    case 'unknown_month':
+      return `Aku belum kenal bulan "${result.requested}" 🙏 Coba tulis nama bulannya, misal "rekap september".`;
+    case 'invalid_days':
+      return `Angka hari ${result.requested} belum masuk akal nih 🙏 Coba "7 hari terakhir".`;
+    default:
+      return UNCLEAR_FALLBACK_REPLY;
   }
-
-  const persona = await aiProvider.generateReply('insight', { totals, insight });
-  trace.persona = persona;
-
-  return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
 }
 
-async function handleGoalStartIntent() {
+/**
+ * The window a recap row must fall in. listTransactions applies `.lte(to)`,
+ * so the half-open end (the first instant of the NEXT period) is shifted
+ * back one millisecond: a row stamped exactly on the boundary belongs to
+ * the period that STARTS there, never to both.
+ */
+function recapQueryWindow(recapPeriod) {
+  if (!recapPeriod.from) return {};
+  return {
+    from: recapPeriod.from,
+    to: new Date(new Date(recapPeriod.to).getTime() - 1).toISOString(),
+  };
+}
+
+/** Top expense categories in scope, largest first (numbers only, no dates). */
+function buildRecapBreakdown(rows, limit = 5) {
+  return Object.entries(calculateCategoryBreakdown(rows, 'expense'))
+    .filter(([, amount]) => Number(amount) > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([category, amount]) => ({ category, amount: Number(amount) }));
+}
+
+/**
+ * Biggest rows in scope, preformatted for the persona. Transfers are left
+ * out on purpose: a transfer is neither income nor expense (Sprint D4), so
+ * listing one under "pengeluaran terbesar" would misreport it.
+ */
+function buildRecapTransactions(rows, limit = 5) {
+  return rows
+    .filter((tx) => tx.type !== 'transfer')
+    .sort((a, b) => Number(b.amount) - Number(a.amount))
+    .slice(0, limit)
+    .map((tx) => formatTransactionLine(tx));
+}
+
+/**
+ * What the conversation remembers about the last scoped recap, so a
+ * follow-up can narrow it ("yang makanan aja?"). Plain all-time "rekap"
+ * deliberately stores NOTHING: it is the default answer, there is nothing
+ * to narrow - which also keeps a bare "rekap" side-effect free.
+ */
+function recapScopeContext(recapPeriod, filter) {
+  if (recapPeriod.kind === 'all_time') return {};
+  return {
+    recapScope: {
+      kind: recapPeriod.kind,
+      from: recapPeriod.from,
+      to: recapPeriod.to,
+      label: recapPeriod.label,
+      isCurrentMonth: recapPeriod.isCurrentMonth === true,
+      filter: filter ?? null,
+    },
+  };
+}
+
+/**
+ * Rebuilds a stored recap scope (state_context.recapScope) as a period the
+ * facts builder can use. Stored windows are trusted as LABELS only - the
+ * rows are always re-read with the caller's own user id, so a scope can
+ * never surface another user's data. An unusable stored window returns
+ * null (the caller then falls back to normal routing instead of querying
+ * with garbage bounds).
+ */
+function periodFromScope(scope) {
+  if (!scope || !scope.from || !scope.to) return null;
+  if (Number.isNaN(new Date(scope.from).getTime()) || Number.isNaN(new Date(scope.to).getTime())) {
+    return null;
+  }
+  const known = new Set(['day', 'week', 'last_days', 'month']);
+  return {
+    kind: known.has(scope.kind) ? scope.kind : 'day',
+    from: scope.from,
+    to: scope.to,
+    label: scope.label ?? null,
+    isCurrentMonth: scope.isCurrentMonth === true,
+  };
+}
+
+/**
+ * Narrows the rows ALREADY scoped to the caller's own window (Priority 6).
+ * Everything here is a filter over this user's rows - no new query, so no
+ * new scoping surface. A wallet-scoped filter also keeps NULL-wallet rows
+ * when it is the default wallet (decision C: degraded facts belong to the
+ * default wallet - same rule the balance read uses).
+ */
+function applyRecapFilter(rows, filter) {
+  if (!filter) return rows;
+  if (filter.kind === 'category') {
+    const wanted = String(filter.value).toLowerCase();
+    return rows.filter((tx) => String(tx.category ?? '').toLowerCase() === wanted);
+  }
+  if (filter.kind === 'wallet') {
+    return rows.filter((tx) =>
+      tx.wallet_id === filter.walletId ||
+      (filter.isDefault === true && tx.wallet_id === null),
+    );
+  }
+  return rows;
+}
+
+/** Facts packet: totals + pre-scoped period + breakdown + key rows + insight/budgets. */
+async function buildRecapFacts(user, recapPeriod, filter, trace) {
+  const window = recapQueryWindow(recapPeriod);
+  const rows = applyRecapFilter(await transactionQueries.listTransactions(user.id, window), filter);
+  const totals = calculateTotals(rows);
+
+  // The insight packet (month trend / goal predictions / one recommendation)
+  // is computed from the WHOLE history and only makes sense for an all-time
+  // or current-month report - a single day's recap has no trend. It also
+  // degrades to null instead of failing the reply (Sprint E rule).
+  let insight = null;
+  const wantsInsight = recapPeriod.kind === 'all_time' || recapPeriod.isCurrentMonth === true;
+  if (wantsInsight && !filter) {
+    try {
+      const insightRows = recapPeriod.from
+        ? await transactionQueries.listTransactions(user.id)
+        : rows;
+      insight = await insightsDomain.buildInsightFacts(user.id, insightRows);
+      trace.insight = insight;
+    } catch (err) {
+      trace.insightError = err.message;
+    }
+  }
+
+  // Budget progress: standing monthly rows measured against the report's
+  // own window, so usage under 100% is reportable too (not only the
+  // over-budget recommendation the insight packet carries).
+  let budgets = insight?.budgets ?? null;
+  if (!budgets && recapPeriod.kind === 'month' && !filter) {
+    try {
+      budgets = await budgetsDomain.listBudgetsWithProgress(user.id, window);
+    } catch (err) {
+      trace.budgetFactsError = err.message;
+    }
+  }
+
+  const facts = {
+    totals,
+    period:
+      recapPeriod.kind === 'all_time'
+        ? null
+        : { label: recapPeriod.label, from: recapPeriod.from, to: recapPeriod.to, count: rows.length },
+    filter: filter ? filter.label : null,
+    breakdown: buildRecapBreakdown(rows),
+    transactions: buildRecapTransactions(rows),
+    budgets,
+    insight,
+  };
+  trace.recapFacts = {
+    period: recapPeriod.kind,
+    count: rows.length,
+    filter: filter ? filter.kind : null,
+    insight: insight !== null,
+    budgets: budgets !== null,
+  };
+  return facts;
+}
+
+/**
+ * Static facts-only report, used when the persona call itself fails. A
+ * recap never writes anything, so this must NOT become the generic
+ * "coba kirim lagi" pipeline error - the user asked a read-only question
+ * and the backend numbers are already in hand.
+ */
+function buildStaticRecapReply(facts) {
+  const heading = facts.period ? `*Rekap ${facts.period.label}*` : '*Rekap keuangan kamu*';
+  const bullets = [
+    `- Pemasukan: ${formatRupiah(facts.totals.income)}`,
+    `- Pengeluaran: ${formatRupiah(facts.totals.expense)}`,
+    `- Selisih: ${formatRupiah(facts.totals.balance)}`,
+  ];
+  const top = facts.breakdown[0];
+  if (top) bullets.push(`- Kategori terbesar: ${top.category} (${formatRupiah(top.amount)})`);
+  if (facts.period && facts.period.count === 0) {
+    return `${heading}\n\nBelum ada catatan di periode itu ya 🙏`;
+  }
+  return `${heading}\n\n${bullets.join('\n')}`;
+}
+
+/** Shared by the recap intent and the narrowing follow-up (Priority 6). */
+async function runRecap(user, recapPeriod, filter, trace) {
+  // Every recap trace records the window it actually queried - the
+  // narrowing path reaches runRecap without going through
+  // handleRecapIntent, so the scope under test is set here.
+  trace.recapPeriod = recapPeriod;
+  const facts = await buildRecapFacts(user, recapPeriod, filter, trace);
+  trace.summary = facts.totals;
+
+  let reply;
+  try {
+    const persona = await aiProvider.generateReply('insight', facts);
+    trace.persona = persona;
+    reply = persona.text;
+  } catch (err) {
+    trace.personaError = err?.message ?? String(err);
+    reply = buildStaticRecapReply(facts);
+  }
+
+  return {
+    reply,
+    newState: STATES.IDLE,
+    newStateContext: recapScopeContext(recapPeriod, filter),
+  };
+}
+
+async function handleRecapIntent(user, rawText, trace) {
+  const recapPeriod = parseRecapPeriod(rawText, new Date());
+  trace.recapPeriod = recapPeriod;
+
+  if (recapPeriod.kind === 'clarify') {
+    // Ask instead of reporting a period we could not pin down - and keep
+    // whatever scope was stored so the conversation is not reset.
+    trace.recapScope = 'clarify';
+    return {
+      reply: buildPeriodClarifyReply(recapPeriod),
+      newState: STATES.IDLE,
+      newStateContext: user.state_context || {},
+    };
+  }
+
+  return runRecap(user, recapPeriod, null, trace);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 (Priority 6 - context retention): narrowing follow-ups.
+//
+// After a SCOPED recap the conversation remembers its window, so the
+// natural short replies that used to fall through to the classifier and
+// come back as an unrelated (or all-time) answer - "yang makanan aja",
+// "yang tanggal 7?", "tampilkan yang BRI", "Kalau bulan ini?" - narrow
+// the recap that is actually on screen. The scope lives in THIS user's
+// state_context and every row is still read with this user's id, so a
+// narrowing can never surface another caller's data.
+// ---------------------------------------------------------------------------
+
+const RECAP_NARROW_UNRESOLVED_REPLY =
+  'Maksudnya yang mana? Sebut kategorinya (misal "yang makanan"), ' +
+  'dompetnya (misal "yang BRI"), atau tanggalnya (misal "yang tanggal 7") ya.';
+
+// Leading words that mark a follow-up as "narrow what we were talking about".
+const NARROWING_LEAD_PATTERN =
+  /^(?:gimana\s+kalau|kalau|tampilkan|lihat|sebutkan|rekap|terus|yg|yang)\b/;
+// Trailing filler dropped before the payload is interpreted.
+const NARROWING_NOISE = /\b(?:aja|saja|dong|nih|gimana|ya|yah|deh|kok|dong)\b/g;
+
+/**
+ * Pure, no I/O. Returns { payload } when a message narrows the last scoped
+ * recap, otherwise null so the normal router keeps owning it. Deliberately
+ * conservative: it only triggers on a narrowing LEAD word, and it refuses
+ * anything that carries its own amount or names a write/edit command - a
+ * message that records or manages data must never be swallowed by a read.
+ */
+export function parseRecapNarrowing(rawText) {
+  const lower = String(rawText ?? '').toLowerCase().trim();
+  if (!NARROWING_LEAD_PATTERN.test(lower)) return null;
+  if (parseMoneyAmount(lower) !== null) return null;
+  if (
+    isCategoryManageRequest(lower) ||
+    isWalletManageRequest(lower) ||
+    isBudgetManageRequest(lower) ||
+    isGoalStartRequest(lower) ||
+    isUndoRequest(lower) ||
+    isDeleteRequest(lower) ||
+    isEditRequest(lower) ||
+    isSearchRequest(lower) ||
+    isTransferRequest(lower) ||
+    // P2-A: "lihat transaksi bulan ini" while a recap is on screen is a NEW
+    // list request, not a filter over the recap - it owns its own scope.
+    isTransactionListRequest(lower) ||
+    // A LIST/STATUS ask is its own intent: "lihat dompet dong" while a
+    // recap is on screen must still answer with the wallets, not be
+    // swallowed as a filter over the recap.
+    isCategoryReadRequest(lower) ||
+    isWalletReadRequest(lower) ||
+    isBudgetReadRequest(lower) ||
+    isGoalReadRequest(lower)
+  ) {
+    return null;
+  }
+
+  const payload = lower
+    .replace(/^(?:gimana\s+kalau|kalau|tampilkan|lihat|sebutkan|rekap|terus)\s*/, '')
+    .replace(/^(?:yang|yg)\s+/, '')
+    .replace(NARROWING_NOISE, ' ')
+    .replace(/[.!?]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // "rekap" / "tampilkan" alone is not a narrowing - let it route normally.
+  return payload ? { payload } : null;
+}
+
+/**
+ * Resolves a narrowing payload to a filter over THIS user's own data:
+ * a category first (the usual "yang makanan"), then a wallet ("yang BRI").
+ * Both are read-only lookups; an unresolvable payload returns null and the
+ * caller asks instead of guessing.
+ */
+async function resolveRecapFilter(user, payload, trace) {
+  const category = matchCategoryName(payload, await getActiveCategoryNames(user.id));
+  if (category) {
+    return { filter: { kind: 'category', value: category, label: category } };
+  }
+
+  const wallets = await walletsDomain.listActiveWallets(user.id);
+  const lower = payload.toLowerCase();
+  const wallet =
+    wallets.find((row) => row.name.toLowerCase() === lower) ??
+    wallets.find(
+      (row) =>
+        row.name.toLowerCase().includes(lower) ||
+        (lower.length >= 3 && lower.includes(row.name.toLowerCase())),
+    ) ??
+    null;
+
+  if (wallet) {
+    return {
+      filter: {
+        kind: 'wallet',
+        walletId: wallet.id,
+        isDefault: wallet.is_default === true,
+        label: `dompet ${wallet.name}`,
+      },
+    };
+  }
+
+  trace.recapFilter = 'unresolved';
+  return { filter: null };
+}
+
+/**
+ * Runs only while a scoped recap is on screen. Returns null (so the normal
+ * router handles the message) when there is no scope, when the message is
+ * not a narrowing, or when the stored scope turns out to be unusable.
+ */
+async function handleRecapNarrowing(user, rawText, trace) {
+  const scope = user.state_context?.recapScope;
+  if (!scope) return null;
+
+  const narrowing = parseRecapNarrowing(rawText);
+  if (!narrowing) return null;
+  trace.recapNarrowing = narrowing.payload;
+
+  const parsed = parseRecapPeriod(narrowing.payload, new Date());
+  if (parsed.kind === 'clarify') {
+    trace.recapPeriod = parsed;
+    return {
+      reply: buildPeriodClarifyReply(parsed),
+      newState: STATES.IDLE,
+      newStateContext: user.state_context,
+    };
+  }
+
+  // The period comes from the payload when it names one ("Kalau bulan
+  // ini?"), otherwise the stored window is reused - the narrowing only ever
+  // adds a filter on top of what the user is already looking at.
+  const period = parsed.kind === 'all_time' ? periodFromScope(scope) : parsed;
+  if (!period) return null;
+
+  const { filter } = await resolveRecapFilter(user, narrowing.payload, trace);
+  const effectiveFilter = filter ?? scope.filter ?? null;
+
+  if (parsed.kind === 'all_time' && !effectiveFilter) {
+    // Looked like a narrowing but nothing in it could be pinned down:
+    // ask, rather than answering with a window the user never named.
+    return {
+      reply: RECAP_NARROW_UNRESOLVED_REPLY,
+      newState: STATES.IDLE,
+      newStateContext: user.state_context,
+    };
+  }
+
+  return runRecap(user, period, effectiveFilter, trace);
+}
+
+// ---------------------------------------------------------------------------
+// P2-A (context retention for lists): after a LIST the conversation
+// remembers what that list was scoped to, so the natural short replies -
+// "yang transportasi aja", "tanggal 7 aja", "nggak, bulan lalu", "bukan
+// transportasi, makanan" - narrow the list that is actually on screen.
+//
+// Same discipline as the recap narrowing:
+//   - the scope lives in THIS user's state_context, and every row is read
+//     again with this user's id - a narrowing can never surface another
+//     user's data;
+//   - only the dimension the follow-up NAMES is replaced, the rest of the
+//     scope survives ("yang transportasi aja" keeps the period AND the
+//     type; "nggak, bulan lalu" replaces only the period);
+//   - a message with an amount, a write/manage verb, a search, or another
+//     read is never swallowed here - the router keeps owning it;
+//   - nothing resolvable at all -> ask, never answer a window nobody named.
+// ---------------------------------------------------------------------------
+
+const LIST_NARROW_UNRESOLVED_REPLY =
+  'Maksudnya yang mana? Sebut kategorinya (misal "yang makanan") ' +
+  'atau periodenya (misal "tanggal 7" / "bulan lalu") ya.';
+
+// Leading words that mark a follow-up as "narrow the list we are looking at".
+const LIST_NARROW_LEAD_PATTERN =
+  /^(?:gimana\s+kalau|kalau|nggak|bukan|tidak|terus|tampilkan|lihat|sebutkan|yg|yang)\b/;
+
+// P2-B: the aggregate follow-ups over the rows on screen. Each one carries
+// its own phrasing (no narrowing lead, often a bare question), so it is
+// matched BEFORE the lead/period gate below - while a bare PERIOD question
+// ("berapa pengeluaran bulan ini") still falls through to the recap.
+const LIST_TOTAL_FOLLOWUP =
+  /^(?:berapa\s+)?(?:total(?:nya)?|jumlah(?:nya)?)(?:\s+(?:semua|semuanya))?\s*(?:berapa|brp)?$/;
+const LIST_EXTREME_MAX_FOLLOWUP =
+  /^(?:yang\s+)?(?:paling|ter)\s*(?:gede(?:nya)?|besar(?:nya)?|banyak)\s*(?:berapa|brp)?$/;
+const LIST_EXTREME_MIN_FOLLOWUP =
+  /^(?:yang\s+)?(?:paling|ter)\s*(?:kecil(?:nya)?|sedikit)\s*(?:berapa|brp)?$/;
+// "yang tadi transfer ada nggak?" - an existence check over THIS context.
+// Real transfer writes ("transfer 50rb dari BRI ke Mandiri") never reach
+// this parser: the amount / isTransferRequest guards below reject them.
+const LIST_TRANSFER_FOLLOWUP = /^(?:yang\s+)?(?:tadi\s+)?transfer(?:nya)?\b/;
+
+/**
+ * Pure, no I/O. The narrowed payload of a list follow-up, or null when the
+ * message is not one (the normal router then keeps owning it).
+ *
+ * "bukan transportasi, makanan" is the replacement shape: the word after
+ * the comma is the filter being SET, the rejected one is dropped.
+ *
+ * action tells the caller WHAT the follow-up does (P2-B added the
+ * aggregates next to P2-A's 'narrow'):
+ *   'narrow'          - period/category/type replacement;
+ *   'total'           - "totalnya berapa?" over the rows on screen;
+ *   'extreme_max'/'extreme_min' - "yang paling gede?"/"yang paling kecil?";
+ *   'transfer_exists' - "yang tadi transfer ada nggak?".
+ */
+export function parseListNarrowing(rawText) {
+  const lower = String(rawText ?? '').toLowerCase().trim();
+  if (!lower) return null;
+  if (parseMoneyAmount(lower) !== null) return null;
+  if (isCapabilityQuestion(lower)) return null;
+  if (GREETING_WORDS.some((word) => containsWord(lower, word))) return null;
+  if (SMALL_TALK_WORDS.some((word) => containsWord(lower, word))) return null;
+  if (
+    isUndoRequest(lower) ||
+    isDeleteRequest(lower) ||
+    isEditRequest(lower) ||
+    isSearchRequest(lower) ||
+    isTransferRequest(lower) ||
+    isCategoryManageRequest(lower) ||
+    isWalletManageRequest(lower) ||
+    isBudgetManageRequest(lower) ||
+    isGoalStartRequest(lower) ||
+    isGoalManageRequest(lower) ||
+    // Reads are their own intent - "lihat dompet dong" answers with the
+    // wallets, "lihat transaksi bulan ini" starts a fresh list.
+    isCategoryReadRequest(lower) ||
+    isWalletReadRequest(lower) ||
+    isBudgetReadRequest(lower) ||
+    isGoalReadRequest(lower) ||
+    isTransactionListRequest(lower)
+  ) {
+    return null;
+  }
+
+  const probe = lower
+    .replace(/[.!?]+$/, '')
+    .replace(NARROWING_NOISE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (LIST_TOTAL_FOLLOWUP.test(probe)) return { payload: probe, action: 'total' };
+  if (LIST_EXTREME_MAX_FOLLOWUP.test(probe)) return { payload: probe, action: 'extreme_max' };
+  if (LIST_EXTREME_MIN_FOLLOWUP.test(probe)) return { payload: probe, action: 'extreme_min' };
+  if (LIST_TRANSFER_FOLLOWUP.test(probe)) return { payload: probe, action: 'transfer_exists' };
+
+  const replacement = lower.match(/^(?:nggak|bukan|tidak)\s*,?\s*[^,]+,\s*(.+)$/);
+  let payload = replacement ? replacement[1] : lower;
+  if (!replacement) {
+    const hasLead = LIST_NARROW_LEAD_PATTERN.test(payload);
+    // No narrowing lead and no period of its own -> not a narrowing at all.
+    // And a bare PERIOD only narrows when it is a statement ("tanggal 7
+    // aja"): a bare QUESTION is a totals ask - "berapa pengeluaran bulan
+    // ini", DT-01's "pengeluaran gue tanggal 7 apa aja?" - which the recap
+    // owns whether or not a list scope is stored.
+    if (!hasLead && (!hasPeriodSignal(payload) || isQuestionMessage(payload))) return null;
+    payload = payload.replace(
+      /^(?:gimana\s+kalau|kalau|nggak|bukan|tidak|terus|tampilkan|lihat|sebutkan|yg|yang)\s*[,\s]*/,
+      '',
+    );
+  }
+
+  payload = payload
+    .replace(NARROWING_NOISE, ' ')
+    .replace(/[.!?]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return payload ? { payload, action: 'narrow' } : null;
+}
+
+/**
+ * Narrows the stored transaction scope (P2-A's listScope, P2-B's
+ * searchScope): the follow-up's period/category/type each REPLACE that
+ * dimension, everything else survives - and the keyword of a stored search
+ * survives too, so narrowing a search never silently becomes an all-rows
+ * query. The rows are re-read through the same paths the original reply
+ * used (answerTransactionList for a list, queryScopeRows for a search).
+ *
+ * P2-B also owns the aggregate follow-ups here ('total', 'extreme_*',
+ * 'transfer_exists'): they answer from the SAME stored rows and leave the
+ * scope untouched, because they describe it instead of filtering it.
+ */
+async function handleTransactionListNarrowing(user, rawText, trace) {
+  const listScope = user.state_context?.listScope;
+  const searchScope = user.state_context?.searchScope;
+  const scope = listScope || searchScope;
+  if (!scope) return null;
+  const isSearch = !listScope && Boolean(searchScope);
+
+  const narrowing = parseListNarrowing(rawText);
+  if (!narrowing) return null;
+  trace.listNarrowing = narrowing.payload;
+  trace.narrowingAction = narrowing.action;
+  if (isSearch) trace.intent = 'transaction_search_narrowing';
+
+  if (narrowing.action !== 'narrow') {
+    const rows = await queryScopeRows(user.id, scope);
+    trace.aggregateCount = rows.length;
+    const reply = await buildListAggregateReply(narrowing.action, rows, scope, user.id);
+    return {
+      reply,
+      newState: STATES.IDLE,
+      newStateContext: user.state_context,
+    };
+  }
+
+  const parsed = parseRecapPeriod(narrowing.payload, new Date());
+  if (parsed.kind === 'clarify') {
+    trace.listClarify = parsed.reason;
+    return {
+      reply: `Periode itu belum bisa kubaca ya 🙏\n\n${RECAP_PERIOD_HINTS}`,
+      newState: STATES.IDLE,
+      newStateContext: user.state_context,
+    };
+  }
+
+  // The period comes from the follow-up when it names one, otherwise the
+  // stored window survives - a narrowing only ever narrows.
+  const period =
+    parsed.kind !== 'all_time'
+      ? parsed
+      : scope.from && scope.to
+        ? { kind: scope.kind, from: scope.from, to: scope.to, label: scope.label }
+        : { kind: 'all_time', from: null, to: null, label: null };
+
+  const category = matchCategoryName(narrowing.payload, await activeCategoryNames(user.id));
+  const type = listTypeFromPhrase(narrowing.payload);
+
+  if (parsed.kind === 'all_time' && !category && !type) {
+    // Looked like a narrowing but nothing in it could be pinned down: ask,
+    // rather than answering with a filter the user never named.
+    return {
+      reply: LIST_NARROW_UNRESOLVED_REPLY,
+      newState: STATES.IDLE,
+      newStateContext: user.state_context,
+    };
+  }
+
+  if (isSearch) {
+    const scoped = period && period.kind !== 'all_time';
+    const nextScope = {
+      kind: 'search',
+      keyword: scope.keyword ?? null,
+      amount: scope.amount ?? null,
+      from: scoped ? period.from : null,
+      to: scoped ? period.to : null,
+      label: scoped ? period.label : null,
+      category: category ?? scope.category ?? null,
+      type: type ?? scope.type ?? null,
+    };
+    const rows = await queryScopeRows(user.id, nextScope);
+    trace.listCriteria = {
+      period: nextScope.label,
+      kind: 'search',
+      type: nextScope.type,
+      category: nextScope.category,
+      count: rows.length,
+    };
+    const reply = await buildTransactionListReply(user.id, rows, {
+      type: nextScope.type,
+      category: nextScope.category,
+      periodLabel: nextScope.label,
+    });
+    return {
+      reply,
+      newState: STATES.IDLE,
+      newStateContext: { searchScope: nextScope },
+    };
+  }
+
+  const { reply, scope: nextScope } = await answerTransactionList(
+    user,
+    {
+      period,
+      type: type ?? scope.type ?? null,
+      category: category ?? scope.category ?? null,
+    },
+    trace,
+  );
+
+  return {
+    reply,
+    newState: STATES.IDLE,
+    newStateContext: { listScope: nextScope },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 (Priority 7): goal title derivation + conversational rename/delete.
+// ---------------------------------------------------------------------------
+
+/**
+ * Command/noise words stripped when pulling a goal NAME out of a message.
+ * Case-insensitive but applied to the ORIGINAL text, so the words that are
+ * left keep the casing the user typed ("mau nabung buat Laptop" -> "Laptop").
+ */
+const GOAL_NOISE_PATTERN =
+  /\b(?:rename|delete|buang|hapus|ganti|ubah|rubah|update|edit|nama|judul|goal|goalnya|mau|nabung|buat|bikin|target|yang|ini|itu|dong|nih|ya|yuk)\b/gi;
+
+/**
+ * Pure, no I/O. Pulls the goal's NAME out of the message that started the
+ * flow ("mau nabung buat laptop" -> "laptop", "bikin goal perjalanan" ->
+ * "perjalanan"), and out of a rename/delete target. Returns null when the
+ * message carries no object at all - the flow then ASKS for the title
+ * instead of writing a hardcoded placeholder the user would discover only
+ * when listing their goals.
+ */
+export function deriveGoalTitle(rawText) {
+  const cleaned = String(rawText ?? '')
+    .replace(GOAL_NOISE_PATTERN, ' ')
+    .replace(/[^\p{L}\p{N}&+.'-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || null;
+}
+
+/**
+ * Pure, no I/O. Parses a rename/delete request into its action and the
+ * names involved: { action: 'rename'|'delete', name, newName }.
+ *   name    - the goal being referred to (null = not stated -> the caller
+ *             lets the user pick from their own list)
+ *   newName - rename target, null when the user did not say "jadi ..."
+ *             yet (the caller asks for it, then confirms)
+ * Returns null when the message is not a goal rename/delete at all.
+ */
+export function parseGoalManageMessage(rawText) {
+  const raw = String(rawText ?? '').trim();
+  const lower = raw.toLowerCase();
+  if (!GOAL_WORD_PATTERN.test(lower)) return null;
+
+  const isRename = GOAL_RENAME_PATTERN.test(lower);
+  const isDelete = GOAL_DELETE_VERBS.some((verb) => containsWord(lower, verb));
+  if (!isRename && !isDelete) return null;
+
+  const action = isRename ? 'rename' : 'delete';
+  let target = raw;
+  let newName = null;
+  if (action === 'rename') {
+    const split = /\b(?:jadi|jadiin|menjadi)\b/i.exec(raw);
+    if (split) {
+      target = raw.slice(0, split.index);
+      newName = raw.slice(split.index + split[0].length).trim() || null;
+    }
+  }
+
+  return { action, name: deriveGoalTitle(target), newName };
+}
+
+const GOAL_LIST_NONE_REPLY =
+  'Belum ada goal nih 🎯 Mau bikin? Bilang "mau nabung buat ..." ya.';
+const GOAL_NOT_FOUND_PREFIX = 'Goal-nya nggak ketemu nih 🙏 Yang ada di akun kamu:\n\n';
+const GOAL_DELETE_CANCEL_REPLY = 'Oke, nggak jadi dihapus 👍';
+const GOAL_RENAME_CANCEL_REPLY = 'Oke, nggak jadi diganti 👍';
+const GOAL_INVALID_TITLE_REPLY = 'Judul goal-nya belum kepakai nih 🙏 Coba sebutin lagi ya.';
+
+/** { saved, target, percent } from a goal row - every number from the DB. */
+function goalProgress(goal) {
+  const saved = Number(goal.current_saved) || 0;
+  const target = Number(goal.target_amount) || 0;
+  const percent = target > 0 ? Math.min(100, Math.round((saved / target) * 100)) : 0;
+  return { saved, target, percent };
+}
+
+/** One line per goal, backend numbers only (title, progress, deadline). */
+function goalStatusLine(goal) {
+  const { saved, target, percent } = goalProgress(goal);
+  let line = `- ${goal.title}: ${formatRupiah(saved)} / ${formatRupiah(target)} (${percent}%)`;
+  if (goal.deadline) line += ` · batas ${goal.deadline}`;
+  if (goal.status !== 'achieved') {
+    const monthly = goalsDomain.computeRequiredMonthlySaving(goal.target_amount, goal.deadline);
+    if (Number.isFinite(monthly)) line += `\n  · per bulan ${formatRupiah(monthly)}`;
+  }
+  return line;
+}
+
+/** Read path: honest list/status - no persona call, nothing written. */
+function buildGoalStatusReply(goals) {
+  if (!goals || goals.length === 0) return GOAL_LIST_NONE_REPLY;
+  const shown = goals.slice(0, 5);
+  const more = goals.length > shown.length ? `\n\nMasih ${goals.length - shown.length} lagi ya.` : '';
+  return `🎯 *Goal kamu*\n\n${shown.map(goalStatusLine).join('\n')}${more}`;
+}
+
+function buildGoalListLines(goals) {
+  return goals.map((goal, index) => `${index + 1}. ${goal.title} (${goalProgress(goal).percent}%)`).join('\n');
+}
+
+function matchGoalsByName(goals, name) {
+  if (!name) return goals;
+  const needle = String(name).toLowerCase();
+  return goals.filter((goal) => String(goal.title ?? '').toLowerCase().includes(needle));
+}
+
+/**
+ * Where a rename/delete goes once the TARGET is known: more than one
+ * candidate (or none stated) -> pick by number first; a rename without a
+ * new name -> ask for it; otherwise straight to the "ya"/"batal" confirm.
+ * Every path lands in AWAITING_GOAL_CONFIRM - nothing is written here.
+ */
+async function askGoalConfirm(user, goal, ctx, _trace) {
+  const base = { goalAction: ctx.goalAction, pendingGoalId: goal.id, pendingTitle: goal.title };
+  if (ctx.goalAction === 'rename' && !ctx.goalRenameName) {
+    return {
+      reply: `Oke, "${goal.title}" diganti jadi apa?`,
+      newState: STATES.AWAITING_GOAL_CONFIRM,
+      newStateContext: { ...base, stage: 'await_new_name' },
+    };
+  }
+  if (ctx.goalAction === 'rename') {
+    return {
+      reply:
+        `*Ganti goal "${goal.title}" jadi "${ctx.goalRenameName}"?*\n\n` +
+        'Balas "ya" buat ganti, "batal" buat batal ya.',
+      newState: STATES.AWAITING_GOAL_CONFIRM,
+      newStateContext: { ...base, stage: 'confirm', goalRenameName: ctx.goalRenameName },
+    };
+  }
+  return {
+    reply:
+      `⚠️ *Hapus goal "${goal.title}"?*\n\n` +
+      'Yakin? Balas "ya" buat hapus, "batal" buat batal.',
+    newState: STATES.AWAITING_GOAL_CONFIRM,
+    newStateContext: { ...base, stage: 'confirm' },
+  };
+}
+
+/**
+ * goal_manage (Priority 7): list/status reads answer immediately; a
+ * rename/delete names its target first (or lists the user's own goals so
+ * they can pick), then asks for confirmation. The user-scoped delete/rename
+ * queries in domain/goals.js are the commit-time ownership guard.
+ */
+async function handleGoalManageIntent(user, rawText, trace) {
+  const goals = await goalsDomain.listGoalsForUser(user.id);
+  const parsed = parseGoalManageMessage(rawText);
+
+  if (!parsed) {
+    trace.goalOutcome = 'read';
+    return { reply: buildGoalStatusReply(goals), newState: STATES.IDLE, newStateContext: {} };
+  }
+  trace.goalAction = parsed.action;
+
+  if (goals.length === 0) {
+    return { reply: GOAL_LIST_NONE_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const matches = matchGoalsByName(goals, parsed.name);
+  if (matches.length === 0) {
+    trace.goalOutcome = 'target_not_found';
+    return {
+      reply: `${GOAL_NOT_FOUND_PREFIX}${buildGoalListLines(goals)}`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  if (matches.length > 1) {
+    trace.goalOutcome = 'target_ambiguous';
+    return {
+      reply:
+        '🤔 *Goal yang mana nih?*\n\n' +
+        `${buildGoalListLines(matches.slice(0, 5))}\n\n` +
+        'Balas pakai nomornya ya.',
+      newState: STATES.AWAITING_GOAL_CONFIRM,
+      newStateContext: {
+        goalAction: parsed.action,
+        stage: 'pick',
+        pendingGoalIds: matches.slice(0, 5).map((goal) => goal.id),
+        goalRenameName: parsed.newName ?? null,
+      },
+    };
+  }
+
+  return askGoalConfirm(
+    user,
+    matches[0],
+    { goalAction: parsed.action, goalRenameName: parsed.newName ?? null },
+    trace,
+  );
+}
+
+/**
+ * The confirm stage for rename/delete - same shape as the other AWAITING_*
+ * confirm handlers: 'ya' executes (the scoped query is the ownership
+ * guard), 'batal' cancels, anything else that is a recognized intent hands
+ * back to the router, only 'unclear' re-asks. The pick and new-name stages
+ * write nothing at all, so a stray answer can never rename or delete a row.
+ */
+async function handleAwaitingGoalConfirm(user, rawText, trace) {
+  const ctx = user.state_context || {};
+  const confirmation = parseConfirmationReply(rawText);
+
+  if (ctx.stage === 'pick') {
+    if (confirmation === 'no') {
+      trace.goalOutcome = 'cancelled';
+      return {
+        reply: ctx.goalAction === 'delete' ? GOAL_DELETE_CANCEL_REPLY : GOAL_RENAME_CANCEL_REPLY,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    const index = Number.parseInt(String(rawText).trim(), 10);
+    const ids = Array.isArray(ctx.pendingGoalIds) ? ctx.pendingGoalIds : [];
+    if (Number.isInteger(index) && index >= 1 && index <= ids.length) {
+      const goals = await goalsDomain.listGoalsForUser(user.id);
+      const goal = goals.find((row) => row.id === ids[index - 1]);
+      if (!goal) {
+        return {
+          reply: `${GOAL_NOT_FOUND_PREFIX}${buildGoalListLines(goals.slice(0, 5))}`,
+          newState: STATES.IDLE,
+          newStateContext: {},
+        };
+      }
+      return askGoalConfirm(user, goal, { goalAction: ctx.goalAction, goalRenameName: ctx.goalRenameName ?? null }, trace);
+    }
+    if (detectIntent(rawText) !== 'unclear') return handleIdle(user, rawText, trace);
+    return {
+      reply: `🤔 *Goal yang mana nih?*\n\nBalas pakai nomornya ya (atau "batal").`,
+      newState: STATES.AWAITING_GOAL_CONFIRM,
+      newStateContext: ctx,
+    };
+  }
+
+  if (ctx.stage === 'await_new_name') {
+    if (confirmation === 'no') {
+      trace.goalOutcome = 'cancelled';
+      return { reply: GOAL_RENAME_CANCEL_REPLY, newState: STATES.IDLE, newStateContext: {} };
+    }
+    const newName = deriveGoalTitle(rawText);
+    if (!newName) {
+      return {
+        reply: GOAL_INVALID_TITLE_REPLY,
+        newState: STATES.AWAITING_GOAL_CONFIRM,
+        newStateContext: ctx,
+      };
+    }
+    const goals = await goalsDomain.listGoalsForUser(user.id);
+    const goal = goals.find((row) => row.id === ctx.pendingGoalId);
+    if (!goal) {
+      return {
+        reply: `${GOAL_NOT_FOUND_PREFIX}${buildGoalListLines(goals.slice(0, 5))}`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    return askGoalConfirm(user, goal, { goalAction: ctx.goalAction, goalRenameName: newName }, trace);
+  }
+
+  // Final "ya" / "batal" - the ONLY stage that touches the row.
+  if (confirmation === 'yes') {
+    if (ctx.goalAction === 'delete') {
+      const result = await goalsDomain.deleteGoal(user.id, ctx.pendingGoalId);
+      trace.goalOutcome = result.status;
+      if (result.status !== 'deleted') {
+        return {
+          reply: `${GOAL_NOT_FOUND_PREFIX}Judulnya tadi: ${ctx.pendingTitle ?? '-'}`,
+          newState: STATES.IDLE,
+          newStateContext: {},
+        };
+      }
+      trace.dbAction = { type: 'delete_goal', goal: result.goal };
+      return {
+        reply: `Goal "${result.goal.title}" udah kuhapus 👍`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+
+    const result = await goalsDomain.renameGoal(user.id, ctx.pendingGoalId, ctx.goalRenameName);
+    trace.goalOutcome = result.status;
+    if (result.status === 'not_found') {
+      return {
+        reply: `${GOAL_NOT_FOUND_PREFIX}Judulnya tadi: ${ctx.pendingTitle ?? '-'}`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    if (result.status === 'invalid_title') {
+      return {
+        reply: GOAL_INVALID_TITLE_REPLY,
+        newState: STATES.AWAITING_GOAL_CONFIRM,
+        newStateContext: { ...ctx, stage: 'await_new_name' },
+      };
+    }
+    if (result.status === 'unchanged') {
+      return {
+        reply: 'Namanya emang udah gitu kok 👌',
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    trace.dbAction = { type: 'rename_goal', goal: result.goal };
+    return {
+      reply: `Goal "${ctx.pendingTitle}" diganti jadi "${result.goal.title}" 👍`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  if (confirmation === 'no') {
+    trace.goalOutcome = 'cancelled';
+    return {
+      reply: ctx.goalAction === 'delete' ? GOAL_DELETE_CANCEL_REPLY : GOAL_RENAME_CANCEL_REPLY,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  if (detectIntent(rawText) !== 'unclear') return handleIdle(user, rawText, trace);
+  return {
+    reply: ctx.goalAction === 'delete'
+      ? 'Hapus goal-nya? Balas "ya" atau "batal" ya.'
+      : 'Ganti judul goal-nya? Balas "ya" atau "batal" ya.',
+    newState: STATES.AWAITING_GOAL_CONFIRM,
+    newStateContext: ctx,
+  };
+}
+
+async function handleGoalStartIntent(user, rawText, trace) {
+  const goalTitle = deriveGoalTitle(rawText);
+  trace.goalTitle = goalTitle;
   return {
     reply: 'Target berapa?',
     newState: STATES.AWAITING_GOAL_TARGET,
-    newStateContext: {},
+    // The title is carried through the flow instead of being invented at
+    // insert time ("Goal baru") - it is the user's own words.
+    newStateContext: goalTitle ? { goalTitle } : {},
   };
 }
 
@@ -1329,6 +2642,32 @@ async function handleProductQuestionIntent(user, rawText, trace) {
 const LINK_TOKEN_EXPIRY_MINUTES = 10; // matches app/link/route.ts's cookie maxAge on the frontend
 
 /**
+ * Informational answer for a QUESTION about the dashboard / login
+ * (Phase 2, Priority 5): facts only, no credential. Sources: SPEC 2.5 +
+ * PRODUCT_KNOWLEDGE section 8 (Google login, first link comes from the
+ * bot, later logins are plain Google) for the flow, the user's OWN row
+ * (google_id) for the linked/unlinked state, and the configured
+ * DASHBOARD_BASE_URL for the address. Nothing about the account, the
+ * provider or the data is invented.
+ */
+function buildDashboardInfoReply(user) {
+  const baseUrl = process.env.DASHBOARD_BASE_URL || 'http://localhost:3000';
+  if (user.google_id) {
+    return (
+      `*Dashboard Nera*\n- ${baseUrl}\n\n` +
+      'Akun kamu udah tersambung ke Google kok, jadi tinggal buka alamatnya ' +
+      'dan login pakai akun Google yang sama ya.'
+    );
+  }
+  return (
+    `*Dashboard Nera*\n- ${baseUrl}\n\n` +
+    '- Login pertama kali lewat link connect dari bot: ketik "dashboard" atau ' +
+    '"login", linknya berlaku singkat dan sekali pakai.\n' +
+    '- Sesudah tersambung, login berikutnya tinggal pakai Google seperti biasa.'
+  );
+}
+
+/**
  * dashboard_link intent handler (SPECIFICATION.md section 2.5, per the
  * WhatsApp-first linking flow decision):
  *   - Already-linked users (google_id set) are told they're connected and
@@ -1338,8 +2677,24 @@ const LINK_TOKEN_EXPIRY_MINUTES = 10; // matches app/link/route.ts's cookie maxA
  *   - First-time users get a fresh single-use token (10 min expiry,
  *     matching the frontend cookie) and a link built from
  *     DASHBOARD_BASE_URL.
+ *
+ * Phase 2 (Priority 5): a QUESTION about the dashboard/login is answered
+ * with facts only (buildDashboardInfoReply) - no token is minted. A link
+ * token is a one-time credential bound to this phone number, and asking
+ * "gimana cara login?" is a request for an explanation, not for a
+ * credential. The already-linked / token_issued paths below are unchanged
+ * for the plain command form ("dashboard", "login dong").
  */
-async function handleDashboardLinkIntent(user, _rawText, trace) {
+async function handleDashboardLinkIntent(user, rawText, trace) {
+  if (isQuestionMessage(rawText)) {
+    trace.dashboardLinkOutcome = 'informational';
+    return {
+      reply: buildDashboardInfoReply(user),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
   if (user.google_id) {
     trace.dashboardLinkOutcome = 'already_linked';
     return {
@@ -1647,9 +3002,38 @@ async function handleTransferIntent(user, rawText, trace) {
 // adding the function here plus one line in INTENT_HANDLERS.
 // ---------------------------------------------------------------------------
 
-/** Read-only history lookup: only listTransactions SELECTs are ever issued. */
+/**
+ * Read-only history lookup: only listTransactions SELECTs are ever issued.
+ * Two shapes share it (same read-only contract, same enum value):
+ *   - "cari transaksi makan"  -> Sprint C search: keyword/amount criteria,
+ *     formatted by formatSearchResults (unchanged);
+ *   - "lihat transaksi gue"   -> P2-A list: period/type/category criteria
+ *     from the same WIB parser the recap uses, formatted below.
+ *
+ * P2-B: the plain search also STORES its criteria as searchScope, so the
+ * natural follow-ups ("yang paling gede berapa?", "totalnya berapa?", "yang
+ * makanan aja", "cuma yang tanggal 7") answer from THIS search instead of
+ * an unrelated recap. The scope is criteria only (window / keyword / type /
+ * category - never an id), and every follow-up re-reads the rows with the
+ * caller's own user id.
+ */
 async function handleTransactionSearch(user, rawText, trace) {
+  const lower = String(rawText ?? '').toLowerCase();
+
+  if (isTransactionListRequest(lower)) {
+    return runTransactionList(user, rawText, trace);
+  }
+
   const criteria = parseTransactionCriteria(rawText);
+  // P2-A: a search that names a period searches INSIDE it ("cari transaksi
+  // bulan ini"). Filled only when the criteria carry no window yet, so the
+  // Sprint C "kemarin"/"hari ini" windows keep exactly their own semantics.
+  if (criteria.from === undefined) {
+    const parsed = parseRecapPeriod(lower, new Date());
+    if (parsed.kind !== 'all_time' && parsed.kind !== 'clarify') {
+      Object.assign(criteria, recapQueryWindow(parsed), { periodLabel: parsed.label });
+    }
+  }
   trace.searchCriteria = criteria;
 
   const matches = await transactionsDomain.searchTransactionsForUser(user.id, criteria);
@@ -1658,7 +3042,280 @@ async function handleTransactionSearch(user, rawText, trace) {
   return {
     reply: formatSearchResults(matches, MAX_SEARCH_RESULTS),
     newState: STATES.IDLE,
-    newStateContext: {},
+    newStateContext: { searchScope: searchScopeContext(criteria) },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// P2-A: the transaction LIST read + the scope a follow-up narrows.
+//
+// Everything here is read-only: one listTransactions SELECT scoped to the
+// caller's user id, then static formatting - no persona call (same rule as
+// every Priority 4 read), no write, and an empty result says so honestly
+// instead of reporting Rp0 or falling back to an all-time recap.
+// ---------------------------------------------------------------------------
+
+const LIST_TYPE_WORDS = { expense: 'pengeluaran', income: 'pemasukan' };
+const TYPE_DISPLAY_WORD = { expense: 'keluar', income: 'masuk', transfer: 'transfer' };
+
+/** "pengeluaran" -> 'expense', "pemasukan" -> 'income', otherwise null. */
+function listTypeFromPhrase(lower) {
+  if (/\b(?:pengeluaran|pengeluar)\b/.test(lower)) return 'expense';
+  if (/\b(?:pemasukan)\b/.test(lower)) return 'income';
+  return null;
+}
+
+/** The caller's active category names - the built-in defaults + their rows. */
+async function activeCategoryNames(userId) {
+  const { defaults, custom } = await categoriesDomain.listCategories(userId);
+  return [
+    ...defaults.map((entry) => (typeof entry === 'string' ? entry : entry.name)),
+    ...custom.map((entry) => entry.name),
+  ];
+}
+
+/**
+ * One list row: amount, category, date, type and wallet (when it has one) -
+ * all deterministic fields from the row itself, dates rendered in WIB.
+ * This is deliberately its own formatter: describeTransaction/formatSearch
+ * Results stay byte-identical for the Sprint C search contract.
+ */
+function formatListLine(row, walletNames) {
+  const parts = [formatRupiah(row.amount), row.category, formatShortDate(row.created_at)];
+  if (row.type) parts.push(TYPE_DISPLAY_WORD[row.type] ?? row.type);
+  const walletName =
+    row.wallet_id && walletNames ? walletNames.get(row.wallet_id) : null;
+  if (walletName) parts.push(walletName);
+  return `- ${parts.filter(Boolean).join(' · ')}`;
+}
+
+/**
+ * Heading + bullets (max 5) + honest empty state. The heading names what
+ * was actually queried (type / category / period), so "Ketemu" vs "Belum
+ * ada" is always about the SAME filter the user asked for.
+ */
+async function buildTransactionListReply(userId, rows, filters) {
+  const typeWord = LIST_TYPE_WORDS[filters.type] ?? 'transaksi';
+  const named = `${typeWord}${filters.category ? ` ${filters.category}` : ''}`;
+  const namedCaps = `${typeWord[0].toUpperCase()}${typeWord.slice(1)}${
+    filters.category ? ` ${filters.category}` : ''
+  }`;
+
+  if (!rows || rows.length === 0) {
+    return (
+      `Belum ada ${named}${filters.periodLabel ? ` pada ${filters.periodLabel}` : ''} yang ` +
+      'tercatat nih 🙏 Kalau memang belum dicatat, tambahin lewat chat ("jajan 20rb") ya.'
+    );
+  }
+
+  let walletNames = null;
+  if (rows.some((row) => row.wallet_id)) {
+    const wallets = await walletsDomain.listWalletsWithDetails(userId);
+    walletNames = new Map(wallets.map((wallet) => [wallet.id, wallet.name]));
+  }
+
+  const shown = rows.slice(0, MAX_SEARCH_RESULTS);
+  const lines = shown.map((row) => formatListLine(row, walletNames));
+  const heading = filters.periodLabel ? `${namedCaps} · ${filters.periodLabel}` : namedCaps;
+  const more = rows.length > shown.length ? `\n\nMasih ${rows.length - shown.length} lagi ya.` : '';
+  return `*${heading}*\n\n${lines.join('\n')}${more}`;
+}
+
+/** The scope a list stores so the next message can narrow it, not restart it. */
+function listScopeContext(period, type, category) {
+  const scoped = period && period.kind !== 'all_time';
+  return {
+    kind: period ? period.kind : 'all_time',
+    from: scoped ? period.from : null,
+    to: scoped ? period.to : null,
+    label: scoped ? period.label : null,
+    type: type ?? null,
+    category: category ?? null,
+  };
+}
+
+/**
+ * P2-B: the same idea for a plain Sprint C search. Stores only criteria -
+ * the window, the keyword, the amount, and any category/type a follow-up
+ * narrowed onto - never row ids, so a crafted scope can only ever describe
+ * a FILTER (rows are still re-read with the caller's own user id).
+ */
+function searchScopeContext(criteria) {
+  return {
+    kind: 'search',
+    keyword: criteria.keyword ?? null,
+    amount: criteria.amount ?? null,
+    from: criteria.from ?? null,
+    to: criteria.to ?? null,
+    label: criteria.periodLabel ?? criteria.dateLabel ?? null,
+    category: criteria.category ?? null,
+    type: criteria.type ?? null,
+  };
+}
+
+/**
+ * The rows a stored transaction scope points at - the exact set the reply
+ * on screen was built from, re-read with the caller's user id:
+ *   - list scope  -> the same listTransactions query answerTransactionList
+ *     uses (window + category + type);
+ *   - search scope -> the SAME searchTransactionsForUser call the original
+ *     search made (keyword merge + window), then the category/type filters
+ *     a follow-up added are applied on top - so narrowing a search narrows
+ *     the rows the user is actually looking at, never a different set.
+ */
+async function queryScopeRows(userId, scope) {
+  if (scope.kind === 'search') {
+    const criteria = {
+      ...(scope.keyword ? { keyword: scope.keyword } : {}),
+      ...(scope.amount !== null && scope.amount !== undefined ? { amount: scope.amount } : {}),
+      ...(scope.from ? { from: scope.from } : {}),
+      ...(scope.to ? { to: scope.to } : {}),
+    };
+    let rows = await transactionsDomain.searchTransactionsForUser(userId, criteria);
+    if (scope.category) {
+      const wanted = scope.category.toLowerCase();
+      rows = rows.filter((row) => String(row.category ?? '').toLowerCase() === wanted);
+    }
+    if (scope.type) rows = rows.filter((row) => row.type === scope.type);
+    return rows;
+  }
+  return transactionsDomain.listTransactionsForUser(userId, {
+    ...(scope.from ? { from: scope.from } : {}),
+    ...(scope.to ? { to: scope.to } : {}),
+    ...(scope.category ? { category: scope.category } : {}),
+    ...(scope.type ? { type: scope.type } : {}),
+  });
+}
+
+/** Wallet display names for a row set - only fetched when a row has one. */
+async function walletNameMapFor(userId, rows) {
+  if (!rows || !rows.some((row) => row.wallet_id)) return null;
+  const wallets = await walletsDomain.listWalletsWithDetails(userId);
+  return new Map(wallets.map((wallet) => [wallet.id, wallet.name]));
+}
+
+/**
+ * P2-B: the aggregate follow-ups over the rows on screen ("yang paling gede
+ * berapa?", "totalnya berapa?", "yang tadi transfer ada nggak?"). Every
+ * number is computed here, backend-side, from the re-read rows - the
+ * persona is never asked to calculate (SPEC 7.3).
+ *
+ *   - total excludes transfer rows (a transfer moves money between the
+ *     user's own wallets, so counting it would double-count the same rupiah
+ *     - the same stance the recap takes) and says so in the reply;
+ *   - an empty row set answers honestly instead of reporting Rp0;
+ *   - the biggest/smallest pick is a single deterministic row (newest wins
+ *     a tie), rendered with the same list line as the list itself.
+ */
+async function buildListAggregateReply(action, rows, scope, userId) {
+  const where = scope.label ? ` pada ${scope.label}` : '';
+  const head = scope.label ? ` · ${scope.label}` : '';
+  if (!rows || rows.length === 0) {
+    return `Belum ada transaksi${where} yang bisa kubaca nih 🙏`;
+  }
+
+  if (action === 'total') {
+    const counted = rows.filter((row) => row.type !== 'transfer');
+    const transfers = rows.length - counted.length;
+    if (counted.length === 0) {
+      return `Belum ada transaksi selain transfer${where} yang bisa dihitung nih 🙏`;
+    }
+    const sum = counted.reduce((acc, row) => acc + (Number(row.amount) || 0), 0);
+    const excluded = transfers > 0 ? ` (${transfers} transfer tidak dihitung)` : '';
+    return `*Total${head}*\n\n${formatRupiah(sum)} dari ${counted.length} transaksi${excluded}`;
+  }
+
+  if (action === 'extreme_max' || action === 'extreme_min') {
+    const wantMax = action === 'extreme_max';
+    const best = rows.reduce((a, b) =>
+      wantMax
+        ? Number(b.amount) > Number(a.amount)
+          ? b
+          : a
+        : Number(b.amount) < Number(a.amount)
+          ? b
+          : a,
+    );
+    const word = wantMax ? 'paling gede' : 'paling kecil';
+    const walletNames = await walletNameMapFor(userId, rows);
+    return `*Yang ${word}${head}*\n\n${formatListLine(best, walletNames)}`;
+  }
+
+  // transfer_exists: "yang tadi transfer ada nggak?"
+  const transfers = rows.filter((row) => row.type === 'transfer');
+  if (transfers.length === 0) {
+    return `Belum ada transfer${where} yang tercatat nih 🙏`;
+  }
+  const shown = transfers.slice(0, MAX_SEARCH_RESULTS);
+  const walletNames = await walletNameMapFor(userId, transfers);
+  const lines = shown.map((row) => formatListLine(row, walletNames));
+  const more =
+    transfers.length > shown.length ? `\n\nMasih ${transfers.length - shown.length} lagi ya.` : '';
+  return `*Transfer${head}*\n\nAda ${transfers.length} transfer:\n\n${lines.join('\n')}${more}`;
+}
+
+/**
+ * Runs the list query with filters the router/narrowing already resolved
+ * and returns { reply, scope }. The window comes from recapQueryWindow (the
+ * same from-inclusive/to-exclusive-ms WIB bounds the recap uses).
+ */
+async function answerTransactionList(user, { period, type, category }, trace) {
+  const scoped = period && period.kind !== 'all_time';
+  const criteria = {
+    ...(scoped ? recapQueryWindow(period) : {}),
+    ...(category ? { category } : {}),
+    ...(type ? { type } : {}),
+  };
+  const rows = await transactionsDomain.listTransactionsForUser(user.id, criteria);
+
+  const periodLabel = scoped ? period.label : null;
+  trace.listCriteria = {
+    period: periodLabel,
+    kind: scoped ? period.kind : 'all_time',
+    type: type ?? null,
+    category: category ?? null,
+    count: rows.length,
+  };
+
+  const reply = await buildTransactionListReply(user.id, rows, {
+    type,
+    category,
+    periodLabel,
+  });
+  return { reply, scope: listScopeContext(period, type, category), count: rows.length };
+}
+
+/**
+ * "lihat transaksi bulan ini" / "pengeluaran transportasi bulan ini".
+ * A period the parser cannot pin down answers with the honest clarify (the
+ * scope on screen is kept - same rule as the recap's clarify).
+ */
+async function runTransactionList(user, rawText, trace) {
+  const lower = String(rawText ?? '').toLowerCase();
+  const period = parseRecapPeriod(lower, new Date());
+
+  if (period.kind === 'clarify') {
+    trace.listClarify = period.reason;
+    return {
+      reply: `Periode itu belum bisa kubaca ya 🙏\n\n${RECAP_PERIOD_HINTS}`,
+      newState: STATES.IDLE,
+      newStateContext: user.state_context || {},
+    };
+  }
+
+  const category = matchCategoryName(lower, await activeCategoryNames(user.id));
+  const type = listTypeFromPhrase(lower);
+
+  const { reply, scope } = await answerTransactionList(
+    user,
+    { period, type, category },
+    trace,
+  );
+
+  return {
+    reply,
+    newState: STATES.IDLE,
+    newStateContext: { listScope: scope },
   };
 }
 
@@ -2146,6 +3803,557 @@ async function runCategoryDelete(user, parsed, trace) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2 (Priority 4): read/list replies for the three manage intents.
+// Every number here is computed by the backend from the caller's own rows
+// (wallet balance, budget progress, the active category list) - the reply
+// only words them. A read never writes anything, never asks for "ya", and
+// ends with the pointer the product knowledge base already promises.
+// ---------------------------------------------------------------------------
+
+/**
+ * Words dropped before looking for a WALLET NAME inside a balance ask
+ * ("BRI gue saldonya berapa?" -> "bri"). Whatever is left is only a
+ * CANDIDATE: it still has to match one of the caller's own wallets below,
+ * otherwise the full list is shown - a read never invents a wallet.
+ */
+const WALLET_READ_NOISE_PATTERN =
+  /\b(?:lihat|liat|lihatin|tunjukin|tunjukkan|tampilkan|tampilin|perlihatkan|sebutkan|daftar|list|cek|periksa|berapa|brp|saldonya|saldo|dompet(?:nya)?|wallet(?:nya)?|rekening(?:nya)?|rek(?:nya)?|uang|duit|punya|milik|gue|gua|aku|saya|kamu|lo|lu|nya|semua|semuanya|ada|apa|aja|saja|dong|nih|ya|sekarang)\b/gi;
+
+/** Pure. The wallet name a balance/read message points at, or null. */
+export function extractWalletReadTarget(rawText) {
+  const leftover = String(rawText ?? '')
+    .toLowerCase()
+    .replace(WALLET_READ_NOISE_PATTERN, ' ')
+    .replace(/[^\p{L}\p{N}&]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return leftover.length >= 2 ? leftover : null;
+}
+
+/**
+ * Resolves that candidate against the caller's OWN wallets (exact match,
+ * then prefix, then contains - case-insensitive). null = no match, and the
+ * caller then falls back to the full list.
+ */
+function matchWalletForRead(wallets, candidate) {
+  if (!candidate || !wallets?.length) return null;
+  const lower = candidate.toLowerCase();
+  const exact = wallets.filter((wallet) => String(wallet.name).toLowerCase() === lower);
+  const prefix = wallets.filter((wallet) => String(wallet.name).toLowerCase().startsWith(lower));
+  const contains = wallets.filter((wallet) => String(wallet.name).toLowerCase().includes(lower));
+  return exact[0] ?? prefix[0] ?? contains[0] ?? null;
+}
+
+/**
+ * One wallet status line: name + tags (default / arsip) + its
+ * backend-computed balance. Extracted so the narrowing replies below render
+ * a wallet byte-identically to the full list.
+ */
+function walletStatusLine(wallet) {
+  const tags = [];
+  if (wallet.is_default) tags.push('default');
+  if (wallet.archived_at) tags.push('arsip');
+  const suffix = tags.length ? ` (${tags.join(', ')})` : '';
+  return `- ${wallet.name}${suffix}: ${formatRupiah(wallet.balance ?? 0)}`;
+}
+
+/**
+ * Active + archived wallets, each with its backend-computed balance.
+ *
+ * target: when the message named one wallet ("berapa saldo BRI?"), only
+ * that wallet is answered; a full list additionally reports the Total -
+ * the sum of the same backend-computed balances (transfers move money
+ * between wallets, so the sum is stable; the AI never sees a chance to
+ * calculate it).
+ *
+ * opts (P2-B): title / pointer let a NARROWED reply ("yang aktif aja")
+ * re-use the same line+total formatting without the full-list pointer -
+ * the default two-argument behavior stays byte-identical.
+ */
+function buildWalletStatusReply(wallets, target = null, opts = {}) {
+  const { title = 'Dompet kamu', pointer = true } = opts;
+  if (!wallets || wallets.length === 0) {
+    return 'Belum ada dompet nih. Ketik "tambah dompet ..." buat nambah, atau biarin aja - transaksi tanpa sana dananya masuk "Dompet Utama".';
+  }
+
+  if (target) {
+    return `*Saldo ${target.name}*\n\n${walletStatusLine(target)}`;
+  }
+
+  const lines = wallets.map(walletStatusLine);
+  const total = wallets.reduce((sum, wallet) => sum + (Number(wallet.balance) || 0), 0);
+  const pointerLine =
+    'Kelola: "tambah/ganti nama/arsipkan/hapus dompet ...", atau di dashboard ' +
+    'Settings → Wallets.';
+  return `*${title}*\n\n${lines.join('\n')}\n\nTotal: ${formatRupiah(total)}${
+    pointer ? `\n\n${pointerLine}` : ''
+  }`;
+}
+
+// ---------------------------------------------------------------------------
+// P2-B: WALLET narrowing follow-ups ("dompet gue apa aja" -> "yang aktif
+// aja" / "yang paling gede?" / "yang BRI"). Archived-wallet BEHAVIOR is not
+// touched: the full list still shows active + archived exactly as SPEC
+// section 7.2 / PK's archive rule describe it - "yang aktif aja" only
+// applies the filter the USER just named.
+// ---------------------------------------------------------------------------
+
+const WALLET_NARROW_UNRESOLVED_REPLY =
+  'Maksudnya yang mana? Sebut nama dompetnya (misal "yang BRI") ' +
+  'atau filternya (misal "yang aktif") ya.';
+
+const WALLET_NARROW_LEAD_PATTERN =
+  /^(?:gimana\s+kalau|kalau|nggak|bukan|tidak|terus|tampilkan|lihat|sebutkan|yg|yang|cuma|khusus)\b/;
+
+const WALLET_ACTIVE_FOLLOWUP = /^(?:yang\s+)?aktif(?:\s+(?:aja|saja|doang))?$/;
+const WALLET_EXTREME_FOLLOWUP =
+  /^(?:yang\s+)?(?:paling|ter)\s*(?:gede(?:nya)?|besar(?:nya)?|kecil(?:nya)?)\s*(?:berapa|brp)?$/;
+
+/**
+ * Pure, no I/O. { kind: 'active_only' | 'extreme' | 'target', ... } for a
+ * follow-up over the wallet list on screen, or null when the message is not
+ * one. "saldo BRI berapa?" is deliberately NOT one: it opens with the
+ * container word, so it restarts the (identical) targeted read through the
+ * normal router - the same answer, the same scope.
+ */
+export function parseWalletNarrowing(rawText) {
+  const lower = String(rawText ?? '').toLowerCase().trim();
+  if (!lower) return null;
+  if (parseMoneyAmount(lower) !== null) return null;
+  if (isCapabilityQuestion(lower)) return null;
+  if (GREETING_WORDS.some((word) => containsWord(lower, word))) return null;
+  if (SMALL_TALK_WORDS.some((word) => containsWord(lower, word))) return null;
+  if (
+    isUndoRequest(lower) ||
+    isDeleteRequest(lower) ||
+    isEditRequest(lower) ||
+    isSearchRequest(lower) ||
+    isTransferRequest(lower) ||
+    isCategoryManageRequest(lower) ||
+    isBudgetManageRequest(lower) ||
+    isGoalStartRequest(lower) ||
+    isGoalManageRequest(lower) ||
+    // other domains' reads/writes restart their own route
+    isWalletManageRequest(lower) ||
+    isCategoryReadRequest(lower) ||
+    isBudgetReadRequest(lower) ||
+    isGoalReadRequest(lower) ||
+    isTransactionListRequest(lower) ||
+    isWalletReadRequest(lower)
+  ) {
+    return null;
+  }
+
+  const probe = lower
+    .replace(/[.!?]+$/, '')
+    .replace(NARROWING_NOISE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (WALLET_ACTIVE_FOLLOWUP.test(probe)) return { kind: 'active_only', payload: probe };
+  if (WALLET_EXTREME_FOLLOWUP.test(probe)) {
+    return { kind: 'extreme', dir: /kecil/.test(probe) ? 'min' : 'max', payload: probe };
+  }
+
+  if (!WALLET_NARROW_LEAD_PATTERN.test(lower)) return null;
+  const payload = lower
+    .replace(
+      /^(?:gimana\s+kalau|kalau|nggak|bukan|tidak|terus|tampilkan|lihat|sebutkan|yg|yang|cuma|khusus)\s*[,\s]*/,
+      '',
+    )
+    .replace(NARROWING_NOISE, ' ')
+    .replace(/[.!?]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!payload) return null;
+  if (/^(?:dompet|wallet|saldo|rekening|rek)\b/.test(payload)) return null; // fresh read
+  if (hasPeriodSignal(payload)) return null;
+  return { kind: 'target', payload };
+}
+
+/**
+ * Runs only while a walletScope is stored (see handleBudgetNarrowing for
+ * the shared contract): read-only, caller-scoped, context criteria only -
+ * the wallets themselves are re-read every time, never cached by id.
+ */
+async function handleWalletNarrowing(user, rawText, trace) {
+  const scope = user.state_context?.walletScope;
+  if (!scope) return null;
+
+  const narrowing = parseWalletNarrowing(rawText);
+  if (!narrowing) return null;
+  trace.walletNarrowing = narrowing;
+
+  const wallets = await walletsDomain.listWalletsWithDetails(user.id);
+  const activeOnly = scope.activeOnly === true || narrowing.kind === 'active_only';
+  const shown = activeOnly ? wallets.filter((wallet) => !wallet.archived_at) : wallets;
+
+  let reply;
+  if (narrowing.kind === 'active_only') {
+    reply =
+      shown.length === 0 && wallets.length > 0
+        ? 'Belum ada dompet aktif nih 📌 Semua dompet kamu lagi diarsipkan - ketik "dompet" buat lihat semuanya.'
+        : buildWalletStatusReply(shown, null, { title: 'Dompet aktif', pointer: false });
+  } else if (narrowing.kind === 'extreme') {
+    const wantMax = narrowing.dir === 'max';
+    if (shown.length === 0) {
+      reply = buildWalletStatusReply(shown, null);
+    } else {
+      const balanceOf = (wallet) => Number(wallet.balance) || 0;
+      const best = shown.reduce((a, b) =>
+        wantMax
+          ? balanceOf(b) > balanceOf(a)
+            ? b
+            : a
+          : balanceOf(b) < balanceOf(a)
+            ? b
+            : a,
+      );
+      reply = `*Dompet ${wantMax ? 'paling gede' : 'paling kecil'}*\n\n${walletStatusLine(best)}`;
+    }
+  } else if (narrowing.kind === 'target') {
+    const target = matchWalletForRead(wallets, narrowing.payload);
+    if (!target) {
+      return {
+        reply: WALLET_NARROW_UNRESOLVED_REPLY,
+        newState: STATES.IDLE,
+        newStateContext: user.state_context,
+      };
+    }
+    reply = buildWalletStatusReply(wallets, target);
+  } else {
+    reply = buildWalletStatusReply(shown, null);
+  }
+
+  return {
+    reply,
+    newState: STATES.IDLE,
+    newStateContext: { walletScope: { activeOnly } },
+  };
+}
+
+/**
+ * P2-A: the backend-computed status of one budget. The chat never asks the
+ * persona to derive it (SPEC 7.3: the AI does not calculate):
+ *   under   = still inside the target,
+ *   reached = exactly at the target,
+ *   over    = past it (remaining then goes negative).
+ */
+function budgetStatus(row) {
+  const amount = Number(row.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const spent = Number(row.spent) || 0;
+  if (spent > amount) return 'over';
+  if (spent === amount) return 'reached';
+  return 'under';
+}
+
+/** Every number a budget read reports, precomputed as one backend fact. */
+function budgetFact(row) {
+  const percent = row.percent;
+  return {
+    category: row.category,
+    target: Number(row.amount),
+    spent: Number(row.spent) || 0,
+    remaining: row.remaining,
+    percent: percent === null || percent === undefined ? null : Math.round(percent),
+    status: budgetStatus(row),
+  };
+}
+
+/**
+ * Words dropped before looking for a CATEGORY inside a budget read
+ * ("budget Makanan gue berapa?" -> "makanan"). Leftover that matches none
+ * of the caller's categories -> null, and the full list is shown (a read
+ * never invents a budget or a category).
+ */
+const BUDGET_READ_NOISE_PATTERN =
+  /\b(?:budget(?:nya)?|lihat|liat|lihatin|tunjukin|tunjukkan|tampilkan|tampilin|sebutkan|daftar|list|cek|periksa|gimana|bagaimana|gmn|berapa|brp|sisa|progress|persen|status|terpakai|kepake|dipakai|dipake|lewat|belum|udah|sudah|tinggal|ada|punya|gue|gua|aku|saya|kamu|nya|dong|nih|aja|saja|apa|semua|bulan|ini|lalu|depan|kemarin|minggu|tanggal|hari)\b/gi;
+
+async function resolveBudgetReadCategory(userId, lower, budgetCategories = []) {
+  const leftover = String(lower ?? '')
+    .replace(BUDGET_READ_NOISE_PATTERN, ' ')
+    .replace(/[^\p{L}\p{N}&]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!leftover) return null;
+  // Prefer a category the caller ACTUALLY holds a budget for: a budget row
+  // may carry a raw name the active list spells differently (the audit's
+  // "budget makan" has a row named "Makanan" while the default category is
+  // "Makanan & Minuman"), and a read must find that budget instead of
+  // filtering it out and claiming none exists. The active list stays the
+  // fallback, so a named category with NO budget still answers honestly.
+  return (
+    matchCategoryName(leftover, budgetCategories) ||
+    matchCategoryName(leftover, await activeCategoryNames(userId))
+  );
+}
+
+/**
+ * PK 12 ("Belum tersedia: Budget selain bulanan"): a budget ask that names
+ * a period budgets cannot answer honestly (weekly, a single day, a range,
+ * a future/past month) is told so BEFORE the numbers - and the numbers
+ * shown below are always this month's real progress, never invented ones.
+ */
+function budgetPeriodNote(lower) {
+  const parsed = parseRecapPeriod(lower, new Date());
+  if (parsed.kind === 'all_time') return '';
+  if (parsed.kind === 'month' && parsed.isCurrentMonth === true) return '';
+  return (
+    'Budget Nera bulanan - yang bisa kubaca sekarang progres bulan ini aja ya 🙏 ' +
+    '(budget mingguan atau per tanggal belum tersedia).\n\n'
+  );
+}
+
+/**
+ * This month's budget progress - same numbers as the dashboard card.
+ *
+ * Each line carries the full backend-computed fact: spent / target, the
+ * percent, what is left, and the status (under | reached | over). The
+ * existing prefix is byte-stable (the Priority 4 read tests pin it); the
+ * facts are appended, and an empty state can name the one category the
+ * user asked about.
+ */
+function buildBudgetStatusReply(rows, { target = null, periodNote = '' } = {}) {
+  if (!rows || rows.length === 0) {
+    // The PK 12 honesty line comes FIRST even for an empty list: a weekly
+    // ask from a user with no budgets at all is still a weekly ask
+    // ("budget minggu ini ada?" must say monthly-only, not only "none yet").
+    if (target) {
+      return (
+        `${periodNote}Belum ada budget ${target} nih 📌 Mau bikin? Ketik ` +
+        `"tambah budget ${target} 500rb", atau cek kartu Budget di dashboard.`
+      );
+    }
+    return (
+      `${periodNote}Belum ada budget nih 📌 Ketik "tambah budget Makanan 500rb" buat bikin ` +
+      'patokan belanja bulanan, atau cek kartu Budget di dashboard.'
+    );
+  }
+  const lines = rows.slice(0, 5).map((row) => {
+    const fact = budgetFact(row);
+    const percent = fact.percent === null ? '-' : `${fact.percent}%`;
+    const scope = row.wallet_id ? ' · dompet khusus' : '';
+    const status = fact.status ? ` · ${fact.status}` : '';
+    const remaining =
+      fact.remaining >= 0 ? `sisa ${formatRupiah(fact.remaining)}` : `lewat ${formatRupiah(-fact.remaining)}`;
+    return `- ${row.category}: ${formatRupiah(fact.spent)} / ${formatRupiah(fact.target)} (${percent}) · ${remaining}${status}${scope}`;
+  });
+  const more = rows.length > 5 ? `\nMasih ${rows.length - 5} lagi ya.` : '';
+  const monthLabel = insightsDomain.formatMonthLabel();
+  return (
+    `${periodNote}*Budget ${monthLabel}*\n\n${lines.join('\n')}${more}\n\n` +
+    'Kelola: "tambah/ubah/hapus budget ...", atau lihat kartu Budget di dashboard.'
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P2-B: BUDGET narrowing follow-ups ("tunjukin budget gue" -> "yang makan
+// doang" / "yang lewat budget aja" / "berapa sisanya?").
+//
+// Same discipline as the list/recap narrowing: the scope (category / status)
+// lives in THIS user's state_context, every row is re-read with this user's
+// id, every number is computed here (the persona never calculates), and a
+// message that is a fresh read, a write, or another domain's request is
+// never swallowed - the router keeps owning it.
+// ---------------------------------------------------------------------------
+
+const BUDGET_NARROW_UNRESOLVED_REPLY =
+  'Maksudnya yang mana? Sebut kategorinya (misal "yang makanan") ' +
+  'atau statusnya (misal "yang lewat budget") ya.';
+
+// Same lead words as the list narrowing: "yang ...", "cuma ...", correction
+// shapes ("nggak, ...") - a budget follow-up is the same conversational move.
+const BUDGET_NARROW_LEAD_PATTERN =
+  /^(?:gimana\s+kalau|kalau|nggak|bukan|tidak|terus|tampilkan|lihat|sebutkan|yg|yang|cuma|khusus)\b/;
+
+const BUDGET_STATUS_OVER_PATTERN = /\b(?:lewat|kelewat|kelebihan|lebihi|over)\b/;
+
+/**
+ * Pure, no I/O. { kind: 'remaining' | 'status_over' | 'category', payload }
+ * for a follow-up over the budget list on screen, or null when the message
+ * is not one. Guards that keep other messages on their own route:
+ *   - a message opening with "budget ..." is a FRESH read (it carries its
+ *     own category/period and the PK 12 note);
+ *   - a period payload ("yang bulan lalu") is a fresh read too - budgets
+ *     only answer this month;
+ *   - writes, searches, other domains' reads, amounts and capability
+ *     questions all return null before anything is matched.
+ */
+export function parseBudgetNarrowing(rawText) {
+  const lower = String(rawText ?? '').toLowerCase().trim();
+  if (!lower) return null;
+  if (parseMoneyAmount(lower) !== null) return null;
+  if (isCapabilityQuestion(lower)) return null;
+  if (GREETING_WORDS.some((word) => containsWord(lower, word))) return null;
+  if (SMALL_TALK_WORDS.some((word) => containsWord(lower, word))) return null;
+  if (
+    isUndoRequest(lower) ||
+    isDeleteRequest(lower) ||
+    isEditRequest(lower) ||
+    isSearchRequest(lower) ||
+    isTransferRequest(lower) ||
+    isCategoryManageRequest(lower) ||
+    isWalletManageRequest(lower) ||
+    isBudgetManageRequest(lower) ||
+    isGoalStartRequest(lower) ||
+    isGoalManageRequest(lower) ||
+    // other domains' reads restart their own read, they never narrow budgets
+    isCategoryReadRequest(lower) ||
+    isWalletReadRequest(lower) ||
+    isGoalReadRequest(lower) ||
+    isTransactionListRequest(lower)
+  ) {
+    return null;
+  }
+
+  const probe = lower
+    .replace(/[.!?]+$/, '')
+    .replace(NARROWING_NOISE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // "berapa sisanya?" / "sisa berapa dong" - remaining over THIS context.
+  if (/^(?:berapa\s+)?sisa(?:nya)?(?:\s+(?:berapa|brp))?$/.test(probe)) {
+    return { kind: 'remaining', payload: probe };
+  }
+
+  // A message that OPENS with the container is its own fresh read.
+  if (/^budget(?:nya)?\b/.test(lower)) return null;
+  if (!BUDGET_NARROW_LEAD_PATTERN.test(lower)) return null;
+
+  const payload = lower
+    .replace(
+      /^(?:gimana\s+kalau|kalau|nggak|bukan|tidak|terus|tampilkan|lihat|sebutkan|yg|yang|cuma|khusus)\s*[,\s]*/,
+      '',
+    )
+    .replace(NARROWING_NOISE, ' ')
+    .replace(/[.!?]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!payload) return null;
+  if (/^budget(?:nya)?\b/.test(payload)) return null; // "lihat budget gue"
+  if (hasPeriodSignal(payload)) return null; // "yang bulan lalu" -> fresh read (PK 12)
+  if (BUDGET_STATUS_OVER_PATTERN.test(payload)) return { kind: 'status_over', payload };
+  return { kind: 'category', payload };
+}
+
+/**
+ * The reply for a NARROWED budget list. Empty states stay honest: an
+ * over-budget filter with no matches is "none are over" (never "you have
+ * no budgets"), a category with no budget is the existing named empty.
+ */
+function buildBudgetNarrowReply(rows, { category, status }) {
+  if (!rows || rows.length === 0) {
+    if (status === 'over') {
+      return 'Belum ada budget yang lewat target bulan ini 💪\n\nKetik "budget gue" buat lihat progres semua.';
+    }
+    return buildBudgetStatusReply([], { target: category, periodNote: '' });
+  }
+  return buildBudgetStatusReply(rows, { target: category, periodNote: '' });
+}
+
+/**
+ * "berapa sisanya?" - the remaining of the budget scope on screen, summed
+ * by the backend over exactly those rows (or reported for the single row
+ * the scope narrowed to). Never asks the persona to add anything up.
+ */
+function buildBudgetRemainingReply(rows, { category, status }) {
+  if (!rows || rows.length === 0) return buildBudgetNarrowReply(rows, { category, status });
+
+  const subject = category ? `budget ${category}` : status === 'over' ? 'budget yang lewat' : 'semua budget';
+  if (rows.length === 1) {
+    const fact = budgetFact(rows[0]);
+    const remaining = Number(fact.remaining) || 0;
+    if (remaining >= 0) {
+      return `Sisa ${subject}: ${formatRupiah(remaining)} dari ${formatRupiah(fact.target)} (bulan ini)`;
+    }
+    return `Sisa ${subject}: udah lewat ${formatRupiah(-remaining)} dari ${formatRupiah(fact.target)} (bulan ini) 🙏`;
+  }
+
+  const target = rows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+  const remaining = rows.reduce((sum, row) => sum + (Number(row.remaining) || 0), 0);
+  if (remaining >= 0) {
+    return `Sisa ${subject} bulan ini: ${formatRupiah(remaining)} dari total ${formatRupiah(target)}`;
+  }
+  return `Sisa ${subject} bulan ini: udah lewat ${formatRupiah(-remaining)} dari total ${formatRupiah(target)} 🙏`;
+}
+
+/**
+ * Runs only while a budgetScope is stored. Returns null (so the normal
+ * router handles the message) when there is no scope or the message is not
+ * a budget follow-up - which is what keeps domain switching honest: a
+ * budget list followed by "pengeluaran bulan ini apa aja?" falls straight
+ * through to the router and becomes that request.
+ */
+async function handleBudgetNarrowing(user, rawText, trace) {
+  const scope = user.state_context?.budgetScope;
+  if (!scope) return null;
+
+  const narrowing = parseBudgetNarrowing(rawText);
+  if (!narrowing) return null;
+  trace.budgetNarrowing = narrowing;
+
+  const rows = await budgetsDomain.listBudgetsWithProgress(user.id);
+  let category = scope.category ?? null;
+  let status = scope.status ?? null;
+
+  if (narrowing.kind === 'category') {
+    const resolved = await resolveBudgetReadCategory(
+      user.id,
+      narrowing.payload,
+      rows.map((row) => row.category),
+    );
+    if (!resolved) {
+      // Looked like a narrowing but names no budget/category the caller has:
+      // ask, never invent a target.
+      return {
+        reply: BUDGET_NARROW_UNRESOLVED_REPLY,
+        newState: STATES.IDLE,
+        newStateContext: user.state_context,
+      };
+    }
+    category = resolved;
+  } else if (narrowing.kind === 'status_over') {
+    status = 'over';
+  }
+
+  let shown = rows;
+  if (category) shown = shown.filter((row) => String(row.category) === category);
+  if (status) shown = shown.filter((row) => budgetStatus(row) === status);
+  trace.budgetFacts = shown.map(budgetFact);
+
+  if (narrowing.kind === 'remaining') {
+    return {
+      reply: buildBudgetRemainingReply(shown, { category, status }),
+      newState: STATES.IDLE,
+      newStateContext: user.state_context,
+    };
+  }
+
+  return {
+    reply: buildBudgetNarrowReply(shown, { category, status }),
+    newState: STATES.IDLE,
+    newStateContext: { budgetScope: { category, status } },
+  };
+}
+
+/** The caller's active category list - defaults + their own rows. */
+function buildCategoryStatusReply(categoryLists) {
+  const defaults = (categoryLists?.defaults ?? []).map((entry) =>
+    typeof entry === 'string' ? entry : entry.name,
+  );
+  const custom = (categoryLists?.custom ?? []).map((entry) => entry.name);
+  if (defaults.length === 0 && custom.length === 0) {
+    return 'Daftar kategorimu kosong nih. Ketik "tambah kategori X" buat nambah kategori sendiri.';
+  }
+  const lines = [`- Bawaan (${defaults.length}): ${defaults.join(', ')}`];
+  if (custom.length > 0) lines.push(`- Buatan kamu (${custom.length}): ${custom.join(', ')}`);
+  lines.push(
+    'Kelola: "tambah/ganti nama/hapus kategori ...", atau di dashboard Settings → Categories.',
+  );
+  return `*Kategori kamu*\n\n${lines.join('\n')}`;
+}
+
 async function handleCategoryManageIntent(user, rawText, trace) {
   const parsed = parseCategoryManageMessage(rawText);
   trace.categoryParsed = parsed;
@@ -2153,6 +4361,18 @@ async function handleCategoryManageIntent(user, rawText, trace) {
   if (parsed.action === 'create') return runCategoryCreate(user, parsed, trace);
   if (parsed.action === 'rename') return runCategoryRename(user, parsed, trace);
   if (parsed.action === 'delete') return runCategoryDelete(user, parsed, trace);
+
+  // Phase 2 (Priority 4): a LIST/STATUS request answers with the real list.
+  if (isCategoryReadRequest(rawText.toLowerCase())) {
+    trace.categoryOutcome = 'read';
+    const lists = await categoriesDomain.listCategories(user.id);
+    return {
+      reply: buildCategoryStatusReply(lists),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
   return { reply: CATEGORY_USAGE_HELP_REPLY, newState: STATES.IDLE, newStateContext: {} };
 }
 
@@ -2451,6 +4671,25 @@ async function handleWalletManageIntent(user, rawText, trace) {
   if (parsed.action === 'archive') return runWalletArchive(user, parsed, trace);
   if (parsed.action === 'unarchive') return runWalletUnarchive(user, parsed, trace);
   if (parsed.action === 'delete') return runWalletDelete(user, parsed, trace);
+
+  // Phase 2 (Priority 4) + P2-A: a LIST/STATUS request ("ada dompet apa
+  // ja?", "berapa saldo BRI?", "BRI gue saldonya berapa?") answers with the
+  // real wallets and their real balances - that wallet when the message
+  // names one, the full list (with the backend-summed Total) otherwise.
+  if (isWalletReadRequest(rawText.toLowerCase())) {
+    trace.walletOutcome = 'read';
+    const wallets = await walletsDomain.listWalletsWithDetails(user.id);
+    const target = matchWalletForRead(wallets, extractWalletReadTarget(rawText));
+    trace.walletReadTarget = target ? target.name : null;
+    return {
+      reply: buildWalletStatusReply(wallets, target),
+      newState: STATES.IDLE,
+      // P2-B: the follow-ups ("yang aktif aja", "yang paling gede?",
+      // "yang BRI") narrow THIS list - a flag only, never wallet ids.
+      newStateContext: { walletScope: { activeOnly: false } },
+    };
+  }
+
   return { reply: WALLET_USAGE_HELP_REPLY, newState: STATES.IDLE, newStateContext: {} };
 }
 
@@ -2686,6 +4925,37 @@ async function handleBudgetManageIntent(user, rawText, trace) {
   if (parsed.action === 'create') return runBudgetCreate(user, parsed, trace);
   if (parsed.action === 'update') return runBudgetUpdate(user, parsed, trace);
   if (parsed.action === 'delete') return runBudgetDelete(user, parsed, trace);
+
+  // Phase 2 (Priority 4) + P2-A: a LIST/STATUS request answers with this
+  // month's real progress - the same numbers the dashboard Budget card
+  // shows - for the WHOLE list, or for the one category the message names
+  // ("budget Makanan gue berapa?"). A period budgets cannot answer
+  // ("budget minggu ini ada?") is answered honestly first (PK 12).
+  if (isBudgetReadRequest(rawText.toLowerCase())) {
+    trace.budgetOutcome = 'read';
+    const lower = rawText.toLowerCase();
+    const rows = await budgetsDomain.listBudgetsWithProgress(user.id);
+    const target = await resolveBudgetReadCategory(
+      user.id,
+      lower,
+      rows.map((row) => row.category),
+    );
+    const shown = target ? rows.filter((row) => row.category === target) : rows;
+    trace.budgetReadTarget = target;
+    trace.budgetFacts = shown.map(budgetFact);
+    return {
+      reply: buildBudgetStatusReply(shown, {
+        target,
+        periodNote: budgetPeriodNote(lower),
+      }),
+      newState: STATES.IDLE,
+      // P2-B: remember what this read was scoped to so the natural
+      // follow-ups ("yang makan doang", "yang lewat budget aja",
+      // "berapa sisanya?") narrow THIS view - criteria only, no ids.
+      newStateContext: { budgetScope: { category: target ?? null, status: null } },
+    };
+  }
+
   return { reply: BUDGET_USAGE_HELP_REPLY, newState: STATES.IDLE, newStateContext: {} };
 }
 
@@ -2741,6 +5011,7 @@ async function handleAwaitingBudgetConfirm(user, rawText, trace) {
 export const INTENT_HANDLERS = {
   recap: handleRecapIntent,
   goal_start: handleGoalStartIntent,
+  goal_manage: handleGoalManageIntent,
   help: handleHelpIntent,
   dashboard_link: handleDashboardLinkIntent,
   product_question: handleProductQuestionIntent,
@@ -2759,6 +5030,39 @@ export const INTENT_HANDLERS = {
 };
 
 async function handleIdle(user, rawText, trace) {
+  // Phase 2 (Priority 6): a follow-up that narrows the scoped recap on
+  // screen is answered against THAT scope first - it needs the stored
+  // context, so it must run before the intent is resolved from scratch.
+  const narrowed = await handleRecapNarrowing(user, rawText, trace);
+  if (narrowed) {
+    trace.intent = 'recap_narrowing';
+    return narrowed;
+  }
+
+  // P2-A/P2-B: same idea for the list or search on screen (listScope /
+  // searchScope). The four scopes are mutually exclusive (each read
+  // replaces state_context wholesale), so a follow-up only ever narrows
+  // what the user is actually looking at - and a message that names
+  // another domain falls through every narrowing parser back to the router,
+  // which is what keeps domain switching honest.
+  const listNarrowed = await handleTransactionListNarrowing(user, rawText, trace);
+  if (listNarrowed) {
+    trace.intent ||= 'transaction_list_narrowing';
+    return listNarrowed;
+  }
+
+  const budgetNarrowed = await handleBudgetNarrowing(user, rawText, trace);
+  if (budgetNarrowed) {
+    trace.intent = 'budget_narrowing';
+    return budgetNarrowed;
+  }
+
+  const walletNarrowed = await handleWalletNarrowing(user, rawText, trace);
+  if (walletNarrowed) {
+    trace.intent = 'wallet_narrowing';
+    return walletNarrowed;
+  }
+
   const intent = await resolveIntent(rawText, trace);
   trace.intent = intent;
 
@@ -2843,14 +5147,15 @@ async function handleAwaitingGoalTarget(user, rawText, trace) {
     return {
       reply: 'Coba sebutkan angka target-nya ya, misal "15 juta".',
       newState: STATES.AWAITING_GOAL_TARGET,
-      newStateContext: {},
+      // Keep what we already know about this goal (the derived title).
+      newStateContext: user.state_context || {},
     };
   }
 
   return {
     reply: 'Oke, targetnya kapan? Boleh bilang aja kayak "31 Desember 2026" 📅',
     newState: STATES.AWAITING_GOAL_DEADLINE,
-    newStateContext: { targetAmount: amount },
+    newStateContext: { ...(user.state_context || {}), targetAmount: amount },
   };
 }
 
@@ -2885,10 +5190,37 @@ async function handleAwaitingGoalDeadline(user, rawText, trace) {
     };
   }
 
+  const goalTitle = user.state_context?.goalTitle;
+  if (typeof goalTitle !== 'string' || !goalTitle.trim()) {
+    // A goal with no title would be a placeholder the user never chose
+    // (the old hardcoded "Goal baru"). Ask for it instead, keeping the
+    // amount and the date we already collected.
+    return {
+      reply: 'Goal buat apa nih? (misal "liburan" atau "dana darurat") 🎯',
+      newState: STATES.AWAITING_GOAL_TITLE,
+      newStateContext: { targetAmount, deadline },
+    };
+  }
+
+  return finishGoalCreation(user, { targetAmount, goalTitle, deadline }, trace);
+}
+
+/**
+ * Insert + confirmation of a goal (the tail of the AWAITING_GOAL_* flow).
+ * Split out so the title question can re-enter at the same point instead
+ * of restarting the whole flow.
+ *
+ * Phase 2 (Priority 2): everything from the insert onwards is POST-COMMIT.
+ * If the persona call or the state write fails here the row already
+ * exists, so the reply must be a static, certain confirmation - never the
+ * generic "coba kirim lagi" error, which would invite a second "mau nabung
+ * ..." and a duplicate goal.
+ */
+async function finishGoalCreation(user, ctx, trace) {
   const goal = await goalsDomain.createGoal(user.id, {
-    title: 'Goal baru',
-    target_amount: targetAmount,
-    deadline,
+    title: ctx.goalTitle,
+    target_amount: ctx.targetAmount,
+    deadline: ctx.deadline,
   });
   trace.dbAction = { type: 'insert_goal', goal };
 
@@ -2901,14 +5233,73 @@ async function handleAwaitingGoalDeadline(user, rawText, trace) {
   );
   trace.requiredMonthlySaving = requiredMonthly;
 
-  const persona = await aiProvider.generateReply('goal_created', {
-    target_amount: goal.target_amount,
-    deadline: goal.deadline,
-    required_monthly: requiredMonthly,
-  });
-  trace.persona = persona;
+  try {
+    const persona = await aiProvider.generateReply('goal_created', {
+      target_amount: goal.target_amount,
+      deadline: goal.deadline,
+      required_monthly: requiredMonthly,
+    });
+    trace.persona = persona;
+    return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
+  } catch (err) {
+    trace.personaError = err?.message ?? String(err);
+    trace.postCommitError = err?.message ?? String(err);
+    return {
+      reply: buildCommittedGoalReply(goal, requiredMonthly),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+}
 
-  return { reply: persona.text, newState: STATES.IDLE, newStateContext: {} };
+/**
+ * Fallback title question: only reached when the request carried no object
+ * ("mau nabung") or the context lost it. Acts as the hub for the flow: with
+ * an amount and a date already in the context it finishes the insert,
+ * otherwise it continues to the next missing step.
+ */
+async function handleAwaitingGoalTitle(user, rawText, trace) {
+  if (detectIntent(rawText) !== 'unclear') return handleIdle(user, rawText, trace);
+
+  const ctx = { ...(user.state_context || {}) };
+  const goalTitle = deriveGoalTitle(rawText);
+  if (!goalTitle) {
+    return {
+      reply: 'Goal buat apa nih? (misal "liburan" atau "dana darurat") 🎯',
+      newState: STATES.AWAITING_GOAL_TITLE,
+      newStateContext: ctx,
+    };
+  }
+  ctx.goalTitle = goalTitle;
+
+  if (Number.isFinite(ctx.targetAmount) && /^\d{4}-\d{2}-\d{2}$/.test(String(ctx.deadline ?? ''))) {
+    return finishGoalCreation(user, ctx, trace);
+  }
+  if (Number.isFinite(ctx.targetAmount)) {
+    return {
+      reply: 'Oke, targetnya kapan? Boleh bilang aja kayak "31 Desember 2026" 📅',
+      newState: STATES.AWAITING_GOAL_DEADLINE,
+      newStateContext: ctx,
+    };
+  }
+  return { reply: 'Target berapa?', newState: STATES.AWAITING_GOAL_TARGET, newStateContext: ctx };
+}
+
+/**
+ * Static post-commit confirmation (Phase 2, Priority 2) used when the
+ * persona call fails AFTER the goal row exists. Every number in it comes
+ * from the row we just wrote, and it never asks the user to resend - a
+ * resend here would create a second goal.
+ */
+function buildCommittedGoalReply(goal, requiredMonthly) {
+  const lines = [
+    `Goal "${goal.title}" (${formatRupiah(goal.target_amount)} sebelum ${goal.deadline}) udah kecatat ✅`,
+  ];
+  if (Number.isFinite(requiredMonthly)) {
+    lines.push(`- Nabung per bulan: ${formatRupiah(requiredMonthly)}`);
+  }
+  lines.push('Nggak perlu kirim ulang ya 🙏');
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -3026,49 +5417,111 @@ export async function handleIncomingMessage(phoneNumber, rawText, waMessageId = 
     trace.stateBefore = user.state;
 
     let result;
-    switch (user.state) {
-      case STATES.AWAITING_DIRECTION:
-        result = await handleAwaitingDirection(user, rawText, trace);
-        break;
-      case STATES.AWAITING_GOAL_TARGET:
-        result = await handleAwaitingGoalTarget(user, rawText, trace);
-        break;
-      case STATES.AWAITING_GOAL_DEADLINE:
-        result = await handleAwaitingGoalDeadline(user, rawText, trace);
-        break;
-      case STATES.AWAITING_DELETE_CONFIRMATION:
-        result = await handleAwaitingDeleteConfirmation(user, rawText, trace);
-        break;
-      case STATES.AWAITING_EDIT_UPDATE:
-        result = await handleAwaitingEditUpdate(user, rawText, trace);
-        break;
-      case STATES.AWAITING_CATEGORY_CONFIRM:
-        result = await handleAwaitingCategoryConfirm(user, rawText, trace);
-        break;
-      case STATES.AWAITING_WALLET_CONFIRM:
-        result = await handleAwaitingWalletConfirm(user, rawText, trace);
-        break;
-      case STATES.AWAITING_BUDGET_CONFIRM:
-        result = await handleAwaitingBudgetConfirm(user, rawText, trace);
-        break;
-      case STATES.IDLE:
-      default:
-        result = await handleIdle(user, rawText, trace);
-        break;
+    try {
+      switch (user.state) {
+        case STATES.AWAITING_DIRECTION:
+          result = await handleAwaitingDirection(user, rawText, trace);
+          break;
+        case STATES.AWAITING_GOAL_TARGET:
+          result = await handleAwaitingGoalTarget(user, rawText, trace);
+          break;
+        case STATES.AWAITING_GOAL_DEADLINE:
+          result = await handleAwaitingGoalDeadline(user, rawText, trace);
+          break;
+        case STATES.AWAITING_GOAL_TITLE:
+          result = await handleAwaitingGoalTitle(user, rawText, trace);
+          break;
+        case STATES.AWAITING_GOAL_CONFIRM:
+          result = await handleAwaitingGoalConfirm(user, rawText, trace);
+          break;
+        case STATES.AWAITING_DELETE_CONFIRMATION:
+          result = await handleAwaitingDeleteConfirmation(user, rawText, trace);
+          break;
+        case STATES.AWAITING_EDIT_UPDATE:
+          result = await handleAwaitingEditUpdate(user, rawText, trace);
+          break;
+        case STATES.AWAITING_CATEGORY_CONFIRM:
+          result = await handleAwaitingCategoryConfirm(user, rawText, trace);
+          break;
+        case STATES.AWAITING_WALLET_CONFIRM:
+          result = await handleAwaitingWalletConfirm(user, rawText, trace);
+          break;
+        case STATES.AWAITING_BUDGET_CONFIRM:
+          result = await handleAwaitingBudgetConfirm(user, rawText, trace);
+          break;
+        case STATES.IDLE:
+        default:
+          result = await handleIdle(user, rawText, trace);
+          break;
+      }
+    } catch (error) {
+      // Phase 2 (Priority 2): the post-commit net. A failure that happens
+      // AFTER a write already committed (persona call, context write, a
+      // second query) must never reach webhook.js's SPEC 11.2 boundary -
+      // that path answers "coba kirim lagi", and a resend would create a
+      // DUPLICATE row. trace.dbAction is only set once the write is
+      // committed, so it is the certain-commit signal: answer with a
+      // static confirmation and keep the pipeline alive. With no commit,
+      // the original error still propagates to the honest generic reply.
+      result = recoverFromPostCommitFailure(error, trace);
+      if (!result) throw error;
     }
 
     trace.stateAfter = result.newState;
     trace.reply = result.reply;
 
-    await userQueries.updateUserById(user.id, {
-      state: result.newState,
-      state_context: result.newStateContext || {},
-    });
+    try {
+      await userQueries.updateUserById(user.id, {
+        state: result.newState,
+        state_context: result.newStateContext || {},
+      });
 
-    if (waMessageId) {
-      await messageLogQueries.recordProcessedMessage(user.id, waMessageId);
+      if (waMessageId) {
+        await messageLogQueries.recordProcessedMessage(user.id, waMessageId);
+      }
+    } catch (error) {
+      // Same rule one level down: these writes come AFTER the reply is
+      // built, so failing them can only ever threaten wording, never data.
+      // After a commit that is swallowed (the reply stays the certain
+      // confirmation); before one it still escalates to SPEC 11.2.
+      if (!trace.dbAction) throw error;
+      trace.postCommitError = error?.message ?? String(error);
     }
 
     return trace;
   });
+}
+
+/**
+ * Phase 2 (Priority 2). Builds the static reply for a failure that happened
+ * after `trace.dbAction` was set - i.e. after the database write committed.
+ * Certain wording, no retry suggestion, no technical detail: the operation
+ * DID happen, so telling the user to resend would be both wrong and
+ * dangerous (it is how duplicates are born).
+ */
+function recoverFromPostCommitFailure(error, trace) {
+  if (!trace.dbAction) return null;
+  trace.postCommitError = error?.message ?? String(error);
+  return {
+    reply: buildPostCommitFallbackReply(trace.dbAction),
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+function buildPostCommitFallbackReply(action) {
+  if (action?.type === 'insert_transaction' && action.transaction) {
+    const tx = action.transaction;
+    return (
+      `Dicatat ✅\n- ${formatRupiah(tx.amount)} · ${tx.category}\n\n` +
+      'Udah masuk riwayat kamu, jadi nggak perlu kirim ulang ya 🙏'
+    );
+  }
+  if (action?.type === 'update_transaction') {
+    return 'Perubahannya udah kesimpen ✅ Nggak perlu kirim ulang ya 🙏';
+  }
+  if (action?.type === 'insert_goal' && action.goal) {
+    return buildCommittedGoalReply(action.goal, null);
+  }
+  return 'Perubahan terakhir udah kesimpen di server ✅ Nggak perlu kirim ulang ya 🙏';
 }

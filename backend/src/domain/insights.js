@@ -296,8 +296,12 @@ export function pickRecommendation({ budgets = [], predictions = [], month = nul
  * enough for everything), budgets reuse D3's two-query progress scan,
  * goals come from the existing query layer. Read-only throughout.
  *
- * Returns { month, goals, recommendation } - plain, already-rounded
- * facts for the persona layer (SPECIFICATION.md section 7.3).
+ * Returns { month, budgets, goals, recommendation } - plain,
+ * already-rounded facts for the persona layer (SPECIFICATION.md section
+ * 7.3). `budgets` is the full progress scan for the current WIB month
+ * (every budget with spent/remaining/percent), not just the over-budget
+ * one `recommendation` picks - a report must be able to state progress
+ * that is still under target.
  */
 export async function buildInsightFacts(userId, transactions, now = new Date()) {
   const currentRange = budgetsDomain.monthRange(now);
@@ -318,5 +322,5 @@ export async function buildInsightFacts(userId, transactions, now = new Date()) 
   const predictions = computeGoalPredictions(goals, transactions, now);
   const recommendation = pickRecommendation({ budgets, predictions, month });
 
-  return { month, goals: predictions, recommendation };
+  return { month, budgets, goals: predictions, recommendation };
 }

@@ -91,8 +91,8 @@ describe('detectIntent - Sprint D4 transfer grammar (verb + dari + ke)', () => {
 });
 
 describe('classifier enum <-> handler map sync (D4 mandate)', () => {
-  test('enum is 17 (D4 added transfer) and both sides match exactly', () => {
-    assert.equal(INTENT_CATEGORIES.length, 17);
+  test('enum is 18 (D4 added transfer, Phase 2 goal_manage) and both sides match exactly', () => {
+    assert.equal(INTENT_CATEGORIES.length, 18);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 
@@ -113,22 +113,26 @@ describe('classifier enum <-> handler map sync (D4 mandate)', () => {
 
   test('the classifier prompt describes transfer, prompt version bumped (SPEC 12.3)', () => {
     assert.match(INTENT_CLASSIFIER_SYSTEM_INSTRUCTION, /- "transfer":/);
-    assert.equal(INTENT_CLASSIFIER_PROMPT_VERSION, 'v2026-10-02.1');
+    // Phase 2 (Priority 7) changed the instruction again (goal_manage
+    // added), so SPECIFICATION.md section 12.3 requires the bump.
+    assert.equal(INTENT_CLASSIFIER_PROMPT_VERSION, 'v2026-10-03.1');
   });
 });
 
-describe('Sprint D4 state machine (9 -> 9, no new state)', () => {
-  test('D4 adds NO state - exactly the nine pre-D4 states remain, in order', () => {
+describe('Sprint D4 state machine (9 -> 9 for D4; Phase 2 -> 11)', () => {
+  test('D4 adds NO state - the pre-D4 states remain, in order (Phase 2 then appended two)', () => {
     assert.deepEqual(Object.keys(STATES), [
       'IDLE',
       'AWAITING_DIRECTION',
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
+      'AWAITING_GOAL_TITLE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
       'AWAITING_WALLET_CONFIRM',
       'AWAITING_BUDGET_CONFIRM',
+      'AWAITING_GOAL_CONFIRM',
     ]);
   });
 });

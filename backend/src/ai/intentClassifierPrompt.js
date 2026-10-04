@@ -11,7 +11,7 @@
 // extractionPrompt.js, which pulls out full transaction data. This call
 // only answers "what is the user trying to do", nothing more.
 
-export const INTENT_CLASSIFIER_PROMPT_VERSION = 'v2026-10-02.1';
+export const INTENT_CLASSIFIER_PROMPT_VERSION = 'v2026-10-03.1';
 
 // Keep this list in sync with the canonical intent names used by
 // whatsapp/messageHandler.js's INTENT_HANDLERS map - both the rule-based
@@ -19,9 +19,13 @@ export const INTENT_CLASSIFIER_PROMPT_VERSION = 'v2026-10-02.1';
 // so a new intent can be added by extending both without a translation
 // layer between them. (Sync is asserted by test/unit/sprintCRouting.test.js
 // and test/unit/sprintDRouting.test.js.)
+// Phase 2 (Priority 7) added goal_manage - the conversational goal
+// rename/delete flow - immediately after goal_start, so the enum mirrors
+// the router's slot order.
 export const INTENT_CATEGORIES = [
   'recap',
   'goal_start',
+  'goal_manage',
   'help',
   'dashboard_link',
   'product_question',
@@ -48,6 +52,7 @@ Categories and what they mean:
 - "product_question": the user asks something SPECIFIC about a Nera feature (e.g. "apakah bisa pindahin uang antar dompet?", "kenapa data saya cuma bisa diakses lewat akun sendiri?") - more specific than "help"'s general capability overview.
 - "recap": the user wants to know something about their OWN recorded finances - a summary, balance, spending pattern, whether they're overspending, etc.
 - "goal_start": the user expresses wanting to start saving toward something (a savings goal), without yet giving an amount or deadline.
+- "goal_manage": the user wants to SEE one of their existing savings goals, or to RENAME or DELETE it, e.g. paraphrases of "goal gue udah berapa", "lihat goal dong", "nabung berapa per bulan", "ganti nama goal Lazy jadi Gym", or "hapus goal Lazy" - working with goals they already have, NOT starting a new one (see goal_start). Rename/delete always confirm before anything changes.
 - "transaction": the user is describing a NEW financial transaction - money they spent, received, or moved - that should be recorded. Not about changing or removing an existing one (see transaction_edit / transaction_delete).
 - "transaction_search": the user wants to FIND previously recorded transactions (a read-only history lookup), e.g. paraphrases of "cari transaksi makan" or "lihat pengeluaran minggu ini yang kecatet".
 - "transaction_edit": the user wants to CHANGE an existing recorded transaction (its amount and/or category), e.g. paraphrases of "ubah transaksi makan tadi" or "yang 20rb tadi harusnya 25rb".

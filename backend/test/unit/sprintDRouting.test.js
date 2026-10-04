@@ -55,12 +55,22 @@ describe('collision matrix: category_manage vs the transaction rules', () => {
   test('goal language keeps its routing (Sprint C exclusion applies)', () => {
     assert.equal(detectIntent('mau nabung buat laptop'), 'goal_start');
     assert.equal(detectIntent('mau nabung buat bikin kategori'), 'goal_start');
-    assert.equal(detectIntent('hapus goal'), 'unclear');
+    // Phase 2 (Priority 7): deleting a goal has its own confirmed flow now,
+    // so it leaves 'unclear' - but the Sprint C exclusion still holds: it
+    // is NOT a transaction delete (that is what this lock was guarding).
+    assert.equal(detectIntent('hapus goal'), 'goal_manage');
   });
 
-  test('no dedicated verb -> not a category command', () => {
-    assert.equal(detectIntent('ada kategori apa aja?'), 'unclear');
-    assert.equal(detectIntent('lihat kategori dong'), 'unclear');
+  test('no dedicated verb -> still NOT a write; it is now an answered list read', () => {
+    // D1's original mandate: a category mention with no dedicated verb must
+    // never open the create/rename/delete flow. Phase 2 (Priority 4) went
+    // one step further and ANSWERS those messages with the real category
+    // list instead of dropping them to 'unclear' - either way nothing is
+    // written. A mention with neither a verb nor a read shape still falls
+    // through untouched.
+    assert.equal(detectIntent('ada kategori apa aja?'), 'category_manage');
+    assert.equal(detectIntent('lihat kategori dong'), 'category_manage');
+    assert.equal(detectIntent('soal kategori sih'), 'unclear');
   });
 
   test('regression: older intents still win their own messages', () => {
@@ -80,8 +90,8 @@ describe('collision matrix: category_manage vs the transaction rules', () => {
 });
 
 describe('classifier enum <-> handler map sync (D1 mandate)', () => {
-  test("enum is 17 (14 + D2's wallet_manage + D3's budget_manage + D4's transfer) and both sides match exactly", () => {
-    assert.equal(INTENT_CATEGORIES.length, 17);
+  test("enum is 18 (14 + D2's wallet_manage + D3's budget_manage + D4's transfer + Phase 2's goal_manage) and both sides match exactly", () => {
+    assert.equal(INTENT_CATEGORIES.length, 18);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 
@@ -99,11 +109,13 @@ describe('Sprint D state', () => {
       'AWAITING_DIRECTION',
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
+      'AWAITING_GOAL_TITLE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
       'AWAITING_WALLET_CONFIRM',
       'AWAITING_BUDGET_CONFIRM',
+      'AWAITING_GOAL_CONFIRM',
     ]);
   });
 });

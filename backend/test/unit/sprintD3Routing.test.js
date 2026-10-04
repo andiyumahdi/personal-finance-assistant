@@ -89,14 +89,20 @@ describe('collision matrix: budget_manage vs the older intents', () => {
 
   test('goal language keeps its routing (Sprint C exclusion applies)', () => {
     assert.equal(detectIntent('mau nabung buat budget rumah'), 'goal_start');
-    assert.equal(detectIntent('hapus goal'), 'unclear');
+    // Phase 2 (Priority 7): goal delete has its own confirmed flow; still
+    // not a transaction delete (the Sprint C exclusion this lock guards).
+    assert.equal(detectIntent('hapus goal'), 'goal_manage');
   });
 
-  test('a budget mention without a dedicated verb is not a budget command', () => {
-    assert.equal(detectIntent('budget berapa ya?'), 'unclear');
-    assert.equal(detectIntent('lihat budget dong'), 'unclear');
-    // capability question -> the classifier (product_question) decides
-    assert.equal(detectIntent('apakah bisa atur budget per dompet?'), 'unclear');
+  test('a budget LIST/STATUS request is answered, never a write (Priority 4)', () => {
+    // D3's original mandate: a budget mention WITHOUT a dedicated verb is
+    // not a budget command. Phase 2 keeps that AND answers the read with
+    // this month's real progress instead of dropping it to 'unclear'.
+    assert.equal(detectIntent('budget berapa ya?'), 'budget_manage');
+    assert.equal(detectIntent('lihat budget dong'), 'budget_manage');
+    // Capability question -> knowledge (Priority 5), still not a budget
+    // command and no longer a coin-flip at the classifier.
+    assert.equal(detectIntent('apakah bisa atur budget per dompet?'), 'product_question');
   });
 
   test('recap / help / dashboard / greeting / small_talk regressions', () => {
@@ -199,8 +205,8 @@ describe('parseBudgetManageMessage (pure parser)', () => {
 });
 
 describe('classifier enum <-> handler map sync (D3 mandate)', () => {
-  test("enum is 17 (D4 added transfer) and both sides match exactly", () => {
-    assert.equal(INTENT_CATEGORIES.length, 17);
+  test("enum is 18 (D4 added transfer, Phase 2 goal_manage) and both sides match exactly", () => {
+    assert.equal(INTENT_CATEGORIES.length, 18);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 
@@ -222,11 +228,13 @@ describe('classifier enum <-> handler map sync (D3 mandate)', () => {
     assert.match(INTENT_CLASSIFIER_SYSTEM_INSTRUCTION, /- "budget_manage":/);
     // D4 bumped the classifier prompt again (transfer added to the enum
     // and the instruction) - SPECIFICATION.md section 12.3 versioning.
-    assert.equal(INTENT_CLASSIFIER_PROMPT_VERSION, 'v2026-10-02.1');
+    // Phase 2 (Priority 7) bumped it once more: goal_manage joined the
+    // enum and the instruction, so the prompt changed.
+    assert.equal(INTENT_CLASSIFIER_PROMPT_VERSION, 'v2026-10-03.1');
   });
 });
 
-describe('Sprint D3 state machine (8 -> 9)', () => {
+describe('Sprint D3 state machine (8 -> 9, Phase 2 -> 11)', () => {
   test('AWAITING_BUDGET_CONFIRM exists; every earlier state intact and ordered', () => {
     assert.equal(STATES.AWAITING_BUDGET_CONFIRM, 'AWAITING_BUDGET_CONFIRM');
     assert.deepEqual(Object.keys(STATES), [
@@ -234,11 +242,13 @@ describe('Sprint D3 state machine (8 -> 9)', () => {
       'AWAITING_DIRECTION',
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
+      'AWAITING_GOAL_TITLE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
       'AWAITING_WALLET_CONFIRM',
       'AWAITING_BUDGET_CONFIRM',
+      'AWAITING_GOAL_CONFIRM',
     ]);
   });
 });

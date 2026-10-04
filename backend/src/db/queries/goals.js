@@ -72,3 +72,26 @@ export async function updateGoalById(id, userId, changes) {
   if (error) throw error;
   return data;
 }
+
+/**
+ * Phase 2 (Priority 7): user-scoped HARD DELETE of a goal. Same ownership
+ * rule as updateGoalById - a foreign id matches no row, so it returns null
+ * and nothing is removed. goals has no dependent rows (no ON DELETE
+ * cascade needed, no migration), so a single delete is the whole
+ * operation; there is also no soft-delete column to reuse (decisions
+ * record soft DELETE only for wallets/categories - see the goal flow).
+ */
+export async function deleteGoalById(id, userId) {
+  assertUserScope(userId, 'deleteGoalById');
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('goals')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', userId)
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+  return data ?? null;
+}

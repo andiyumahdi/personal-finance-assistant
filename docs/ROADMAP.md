@@ -295,13 +295,17 @@ semantic classifier fallback, `src/whatsapp/messageHandler.js` +
 
 **Explicitly deferred until after v1.0 is running with real users:**
 - Adding new intents beyond the current set (`greeting`, `dashboard_link`,
-  `help`, `product_question`, `recap`, `goal_start`, `transaction`,
-  `transaction_search`, `transaction_edit`, `transaction_delete`,
-  `transaction_undo`, `category_manage`, `wallet_manage`, `budget_manage`,
-  `transfer`, `small_talk`, `unclear` — the 17 values of
-  `INTENT_CATEGORIES` as of Sprint D4; this list originally stopped at the
-  pre-Sprint-C set, so it is synced here as a factual update only — the
-  deferral itself is unchanged)
+  `help`, `product_question`, `recap`, `goal_start`, `goal_manage`,
+  `transaction`, `transaction_search`, `transaction_edit`,
+  `transaction_delete`, `transaction_undo`, `category_manage`,
+  `wallet_manage`, `budget_manage`, `transfer`, `small_talk`, `unclear` —
+  the 18 values of `INTENT_CATEGORIES` as of the Phase 2 chat-intelligence
+  fixes; this list originally stopped at the pre-Sprint-C set, so it is
+  synced here as a factual update only — the deferral itself is unchanged.
+  `goal_manage` is not an exception to the freeze: it closed paths the
+  audit found dead (listing/renaming/deleting a goal, and reading a
+  wallet/budget/category list) rather than adding coverage for new
+  phrasing, which is the first item in "Still fixed if found" above)
 - Broadening conversational coverage / making the bot "chat better" in general
 - Any change whose only goal is handling more phrasing variety, not fixing
   something broken

@@ -41,9 +41,9 @@ const transferSection = () => sectionLines('TRANSFER');
 const dashboardSection = () => sectionLines('DASHBOARD');
 
 describe('PRODUCT_QUESTION_PROMPT_VERSION (SPECIFICATION.md section 12.3)', () => {
-  test('pinned to the MVP finalization sync version (dashboard edit/hapus + pengingat harian + goal per-bulan)', () => {
+  test('pinned to the chat-intelligence sync version (rekap periode + narrowing, list reads, goal read/rename/delete)', () => {
     // Bump this whenever KNOWLEDGE_BASE content changes (date-based).
-    assert.equal(PRODUCT_QUESTION_PROMPT_VERSION, 'v2026-10-02.3');
+    assert.equal(PRODUCT_QUESTION_PROMPT_VERSION, 'v2026-10-03.1');
   });
 });
 
@@ -210,6 +210,61 @@ describe('MVP finalization sync (mirrors PRODUCT_KNOWLEDGE.md sections 2/3/5/6/7
     assert.match(
       PRODUCT_QUESTION_SYSTEM_INSTRUCTION,
       /langsung dikasih tahu berapa yang harus disisihin tiap bulan/,
+    );
+  });
+});
+
+// Chat-intelligence sync (mirrors PRODUCT_KNOWLEDGE.md sections 2/5/6/11/12
+// after the period-recap, list-read and goal-manage work shipped): the
+// knowledge base must no longer claim these paths are unavailable.
+describe('Chat intelligence sync (rekap periode, list reads, goal manage)', () => {
+  test('REKAP advertises period recaps parsed on the WIB calendar + narrowing follow-ups', () => {
+    const rekap = sectionLines('REKAP - BISA');
+    assert.match(rekap, /REKAP PER PERIODE lewat chat/);
+    assert.match(rekap, /kalender WIB/);
+    assert.match(rekap, /NYEMPITIN rekap yang lagi keliatan lewat pesan lanjutan/);
+    assert.match(rekap, /nambahin filternya di atas periode yang tadi dipilih/);
+    // Only free-form date ranges remain unavailable - not per-category recaps.
+    assert.match(sectionLines('REKAP - BELUM TERSEDIA'), /rentang tanggal/);
+    assert.doesNotMatch(
+      sectionLines('REKAP - BELUM TERSEDIA'),
+      /per kategori/,
+      'per-category recap filtering now ships via narrowing',
+    );
+  });
+
+  test('read paths exist for dompet, budget and kategori with honest read-only wording', () => {
+    assert.match(dompetSection(), /lihat daftar dompet dan saldonya lewat chat/);
+    assert.match(dompetSection(), /baca doang/);
+    assert.match(budgetSection(), /Cek progres budget lewat chat|cek progresnya lewat chat/);
+    assert.match(kategoriSection(), /lihat daftar kategori lewat chat/);
+    assert.match(kategoriSection(), /"ada kategori apa aja\?", "lihat kategori dong"/);
+  });
+
+  test('GOALS advertises read/rename/delete via chat and no longer lists delete as unavailable', () => {
+    const goals = sectionLines('GOALS - BISA');
+    assert.match(goals, /lihat daftar goal beserta progresnya lewat chat/);
+    assert.match(goals, /ganti nama goal lewat chat/);
+    assert.match(goals, /hapus goal lewat chat/);
+    assert.match(goals, /konfirmasi "ya"\/"batal"/);
+    assert.match(goals, /minta pilih nomor dulu/);
+    const belum = sectionLines('GOALS - BELUM TERSEDIA');
+    assert.match(belum, /edit atau tambah kontribusi ke goal lewat chat/i);
+    assert.doesNotMatch(belum, /hapus goal/, 'delete goal now ships via chat');
+  });
+
+  test('CARA PAKAI carries the period/narrowing recap and the goal manage examples', () => {
+    assert.match(
+      PRODUCT_QUESTION_SYSTEM_INSTRUCTION,
+      /bisa juga sebut periodenya \("rekap hari ini", "tanggal 7", "bulan ini"\), lalu nyempitinnya lewat pesan lanjutan/,
+    );
+    assert.match(
+      PRODUCT_QUESTION_SYSTEM_INSTRUCTION,
+      /- Lihat\/ganti nama\/hapus goal: "goal gue" atau "lihat goal dong"/,
+    );
+    assert.match(
+      PRODUCT_QUESTION_SYSTEM_INSTRUCTION,
+      /"hapus goal Lazy" buat hapus/,
     );
   });
 });

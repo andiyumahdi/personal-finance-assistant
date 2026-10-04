@@ -19,9 +19,10 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 ## 2. Cara Menggunakan Nera
 
 - **Catat transaksi:** langsung chat aja, contoh "jajan 20rb" atau "gaji bulan ini 5jt". Nggak perlu format khusus.
-- **Minta rekap:** ketik "rekap" atau "habis berapa minggu ini". Rekap juga otomatis dikirim tiap Senin (mingguan) dan tanggal 1 (bulanan) kalau ada transaksi di periode itu.
+- **Minta rekap:** ketik "rekap" atau "habis berapa minggu ini" — bisa juga sebut periodenya ("rekap hari ini", "tanggal 7", "bulan ini"), lalu nyempitinnya lewat pesan lanjutan ("yang makanan aja"). Rekap juga otomatis dikirim tiap Senin (mingguan) dan tanggal 1 (bulanan) kalau ada transaksi di periode itu.
 - **Pengingat harian:** kalau hari itu kamu belum catat apa pun padahal biasanya rajin, Nera kirim satu pesan lembut sekali sehari — nggak diulang-ulang, dan nggak dikirim ke yang biasanya jarang catat.
 - **Bikin goal:** ketik sesuatu kayak "mau nabung buat laptop", nanti Nera nanya target nominal dan tanggalnya, terus langsung ngitungin berapa yang harus disisihin tiap bulan biar keburu.
+- **Lihat/ganti nama/hapus goal:** "goal gue" atau "lihat goal dong" buat lihat progres, "ganti nama goal Lazy jadi Gym" buat ganti judul, "hapus goal Lazy" buat hapus — yang ngerubah selalu minta konfirmasi "ya"/"batal" dulu (detail di bagian **6. Goals**).
 - **Ubah/hapus transaksi:** tinggal bilang, misal "yang 20rb tadi jadi 25rb" (ubah) atau "hapus yang 20rb" — Nera minta konfirmasi dulu sebelum beneran dihapus. Salah hapus? Ketik "undo" buat balikin transaksi terakhir.
 - **Cari riwayat transaksi:** ketik "cari transaksi makan" atau "cari pengeluaran 20rb", hasilnya maksimal 5 transaksi.
 - **Kelola dompet:** ketik "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri", atau "hapus dompet OVO" — bisa juga lewat dashboard **Settings → Wallets** (detail di bagian **11. Dompet**).
@@ -57,6 +58,7 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 - Bikin kategori sendiri lewat chat, misal "buat kategori Kopi Langganan"
 - Ganti nama kategori lewat chat ("ganti nama kategori Kopi jadi Kopi Pagi") atau di dashboard **Settings → Categories** — transaksi aktif dan budget kamu ikut keganti otomatis
 - Hapus kategori sendiri lewat chat ("hapus kategori Kopi") atau di Settings → Categories
+- Lihat daftar kategori lewat chat ("ada kategori apa aja?", "lihat kategori dong") — Nera nampilin kategori bawaan plus kategori buatanmu, baca doang
 - Pantau daftar kategori + jumlah transaksi aktif per kategori di Settings → Categories; filter kategori di halaman Transaksi ikut daftar terbaru
 
 **Aturan:**
@@ -72,25 +74,28 @@ Sprint C/D/E scope in `docs/ROADMAP.md`, not guessed.
 
 **Bisa:**
 - Minta rekap kapan aja lewat chat — selain total pemasukan/pengeluaran/saldo sejauh ini, rekap minta (on-demand) juga bawa analisis bulan berjalan: tren pengeluaran vs bulan lalu, kategori terbesar, prediksi progress goal aktif, dan satu saran (misal budget yang udah lewat) — semua angka dihitung backend, Nera cuma nyampein
+- Rekap per periode lewat chat — "rekap hari ini", "kemarin", "tanggal 7", "tanggal 3 bulan September", "minggu ini", "bulan ini", "bulan lalu", "7 hari terakhir", atau nama bulan — periodenya ditentuin backend pakai kalender WIB dan angkanya diambil dari catatan di periode itu; kalau periodenya nggak jelas atau belum kejadian, Nera nanya dulu, bukan nebak
+- Nyempitin rekap yang lagi keliatan lewat pesan lanjutan — "yang makanan aja", "yang tanggal 7?", "tampilkan yang BRI" — Nera nambahin filternya di atas periode yang tadi dipilih (kalau pesannya bisa bermakna lebih dari satu, Nera nanya)
 - Rekap otomatis mingguan (Senin) dan bulanan (tanggal 1) — dikirim cuma kalau ada transaksi di periode itu, isinya total pemasukan, pengeluaran, dan saldo (net) periode itu
 - Pengingat harian (bukan rekap, nggak bawa angka): kalau hari itu belum ada transaksi kamu padahal biasanya catat tiap hari, Nera kirim satu pesan lembut — sekali sehari, nggak diulang-ulang, dan nggak buat kamu yang biasanya jarang catat
 
 **Belum tersedia saat ini:**
-- Rekap custom per rentang tanggal tertentu
-- Rekap per kategori spesifik lewat chat
+- Rekap custom per rentang tanggal tertentu (misal "tanggal 1 sampai 7")
 
 ## 6. Goals (Target Nabung)
 
 **Bisa:**
 - Bikin goal baru lewat chat
 - Begitu goal dibikin, backend langsung ngitung tabungan per bulan yang perlu disisihin biar keburu deadline, dan Nera konfirmasiin angkanya (angka dihitung backend, bukan Nera)
+- Lihat daftar goal beserta progresnya lewat chat ("goal gue", "lihat goal dong", "nabung berapa per bulan") — persentase dan tabungan per bulannya dihitung backend
+- Ganti nama goal lewat chat, misal "ganti nama goal Lazy jadi Gym" — Nera minta konfirmasi "ya"/"batal" dulu sebelum diganti
+- Hapus goal lewat chat, misal "hapus goal Lazy" — juga minta konfirmasi "ya"/"batal"; kalau yang cocok lebih dari satu (atau namanya nggak disebut), Nera minta pilih nomor dulu
 - Progress goal (persentase, sisa target) otomatis update tiap ada kontribusi
 - Goal otomatis jadi "tercapai" begitu target ketemu
 - Lihat, edit, dan tambah kontribusi ke goal lewat dashboard
 
 **Belum tersedia saat ini:**
 - Edit atau tambah kontribusi ke goal lewat chat (baru bisa lewat dashboard)
-- Hapus goal
 
 ## 7. Dashboard
 
@@ -154,6 +159,7 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 - Tiap user punya satu dompet default "Dompet Utama" — transaksi yang nggak nyebut sumber dana otomatis dihitung ke sana
 - Catat transaksi sambil nyebut sumber dananya, misal "bayar netflix dari BCA 200rb" — kalau namanya cocok sama dompet kamu, otomatis nempel; kalau namanya nggak dikenal atau dompetnya udah kearsip, diam-diam dihitung ke dompet default (Nera nggak pernah bikin dompet baru dari nama di pesan)
 - Kelola dompet lewat chat: "tambah dompet BRI", "ganti nama dompet BRI jadi BRI Syariah", "arsipkan dompet Mandiri" / "aktifkan dompet Mandiri", "hapus dompet OVO"
+- Lihat daftar dompet dan saldonya lewat chat ("ada dompet apa aja?", "lihat dompet dong", "saldo BRI") — angkanya dihitung backend dari transaksi aktif, baca doang
 - Kelola dompet di dashboard: **Settings → Wallets** (buat, ganti nama, arsip/aktifkan, hapus) — plus kolom **Dompet** di halaman Transaksi
 - Pindah saldo antar dompet lewat chat, misal "pindah 500rb dari BRI ke Mandiri" — Nera langsung bikin SATU catatan transfer (dari dompet sumber ke dompet tujuan) dan balas konfirmasi singkat, tanpa langkah "ya"
 - Saldo tiap dompet = pemasukan − pengeluaran dari transaksi aktif (dihitung langsung tiap dibuka, bukan angka tersimpan) — pindahan antar dompet ikut ngurangin dompet sumber dan nambahin dompet tujuan, jadi totalnya tetap sama
@@ -179,6 +185,7 @@ Kalau user nanya alasan di luar poin-poin ini, jawab jujur nggak tau — jangan 
 - Set budget bulanan per kategori lewat chat, misal "tambah budget Makanan 500rb" — berlaku sebagai patokan tetap tiap bulan, bukan sekali pakai
 - Lihat progres budget di kartu **Budget** (halaman utama dashboard): tiap kategori nunjukin berapa terpakai vs target bulan ini + persentasenya (merah kalau udah lebih), lengkap sama label dompet kalau budget-nya khusus satu dompet
 - Ubah nominal budget lewat chat, misal "ubah budget Makanan jadi 750rb"
+- Cek progres budget lewat chat ("budget berapa ya?", "lihat budget dong") — terpakai vs target bulan berjalan + persentasenya, angka yang sama dengan kartu Budget di dashboard
 - Hapus budget lewat chat, misal "hapus budget Makanan" — Nera minta konfirmasi "ya"/"batal" dulu, sama kayak hapus transaksi
 - Semua angka dihitung ulang dari transaksi aktif bulan berjalan tiap kali dibuka — transaksi yang dihapus nggak dihitung, jadi nggak ada angka basi
 

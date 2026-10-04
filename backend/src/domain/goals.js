@@ -69,3 +69,55 @@ export async function updateGoalProgress(goalId, userId, amount) {
 export async function listGoalsForUser(userId) {
   return goalQueries.listGoals(userId);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2 (Priority 7): conversational goal rename / delete.
+// Same shape as the budgets domain status objects the confirm flows already
+// consume ({ status: 'deleted' | 'not_found' ... }) so the handler reads
+// like the other destructive flows: the QUERY is the commit-time ownership
+// guard (user_id filter), the handler supplies the "ya" confirmation.
+// ---------------------------------------------------------------------------
+
+export const GOAL_TITLE_MAX_LENGTH = 100;
+
+/**
+ * The one place that decides what counts as a goal title, used by BOTH the
+ * create flow and the rename flow (a rename may not introduce a title the
+ * create flow would have rejected). Empty / whitespace-only / absurdly long
+ * titles are refused - they are exactly the input a quick conversational
+ * rename would produce by accident.
+ */
+export function validateGoalTitle(title) {
+  const trimmed = String(title ?? '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) return { ok: false, reason: 'empty' };
+  if (trimmed.length > GOAL_TITLE_MAX_LENGTH) return { ok: false, reason: 'too_long' };
+  return { ok: true, title: trimmed };
+}
+
+/**
+ * User-scoped rename. Returns not_found for a missing/foreign id (same
+ * message either way - a foreign id must not be distinguishable), and
+ * 'unchanged' when the new title equals the old one, so the reply can say
+ * so instead of claiming work that did nothing.
+ */
+export async function renameGoal(userId, goalId, newName) {
+  const validation = validateGoalTitle(newName);
+  if (!validation.ok) return { status: 'invalid_title', reason: validation.reason };
+
+  const goal = await goalQueries.getGoalById(goalId, userId);
+  if (!goal) return { status: 'not_found' };
+  if (goal.title === validation.title) return { status: 'unchanged', goal };
+
+  const updated = await goalQueries.updateGoalById(goalId, userId, {
+    title: validation.title,
+  });
+  if (!updated) return { status: 'not_found' };
+  return { status: 'renamed', goal: updated };
+}
+
+/** User-scoped hard delete: the query's user_id filter IS the guard. */
+export async function deleteGoal(userId, goalId) {
+  const removed = await goalQueries.deleteGoalById(goalId, userId);
+  if (!removed) return { status: 'not_found' };
+  return { status: 'deleted', goal: removed };
+}

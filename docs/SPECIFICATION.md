@@ -119,7 +119,16 @@ Every Monday 08:00 WIB → for each user → backend computes week's totals
 User: "aku mau nabung buat laptop"
 Bot:  asks target amount → asks deadline
 Bot:  backend computes required monthly saving, confirms
-Progress tracked passively; user can ask "goals gua gimana?" anytime
+The goal TITLE comes from the user's own words ("mau nabung buat laptop"
+→ "laptop"); if the request carries no object ("mau nabung"), the bot
+asks what the goal is for instead of writing a placeholder title.
+Progress tracked passively; user can ask "goals gua gimana?" anytime →
+goal_manage lists every goal with its progress and required monthly
+saving (backend-computed, read-only).
+Rename  : "ganti nama goal Lazy jadi Gym" → confirm "ya"/"batal"
+Delete  : "hapus goal Lazy"       → confirm "ya"/"batal"
+          (ambiguous/no title → pick by number first; that step writes
+          nothing). Both execute only on "ya", user_id-scoped.
 ```
 
 ### 2.10 Idle Reminder
@@ -312,7 +321,7 @@ Two consumers: the Baileys backend (chat channel, intent `budget_manage`) and th
 | PATCH | `/api/budgets/:id` | `{amount}` only — retarget; the row's category and wallet scope NEVER change (re-scope = DELETE + POST). `400 invalid_request` (missing field), `400 invalid_amount`, `404 not_found` (unknown/foreign id or malformed uuid) |
 | DELETE | `/api/budgets/:id` | Unconditional once ownership checks out — budgets are referenced by nothing, so confirmation UX belongs to the chat flow (section 12.1), not the API → `{success:true}`; `404 not_found` |
 
-Chat channel (intent `budget_manage`, one of the 17 classifier enum values — 16 when D3 shipped, the `transfer` intent became the 17th in D4 — current classifier prompt `v2026-10-02.1`, it read `v2026-10-01.2` at D3): the verb comes BEFORE the word `budget` — create `<tambah|tambahin|buat|bikin> budget <kategori> <nominal>`, update `<ubah|update|rubah|ganti> budget <kategori> [jadi|menjadi] <nominal>`, delete `<hapus|delete|buang> budget <kategori>`. Scope is category-wide ONLY (wallet-scoped budgets are API-managed — the handler never passes a `walletId`). Create/update resolve the category by EXACT name and execute immediately (no fuzzy `matchCategoryName`): absent → the category-not-found reply, ambiguous (several categories share the name) → refusal with 0 writes; delete opens `AWAITING_BUDGET_CONFIRM` (section 12.1) with ownership + existence re-checked at commit. A message with the budget word but no recognized verb gets static usage help. Category ties (section 7.2): rename cascades budgets; delete is blocked while `countBudgetsForCategory > 0`.
+Chat channel (intent `budget_manage`, one of the 18 classifier enum values — 16 when D3 shipped, the `transfer` intent became the 17th in D4, `goal_manage` the 18th in the Phase 2 chat-intelligence fixes — current classifier prompt `v2026-10-03.1`, it read `v2026-10-02.1` at D4 and `v2026-10-01.2` at D3): the verb comes BEFORE the word `budget` — create `<tambah|tambahin|buat|bikin> budget <kategori> <nominal>`, update `<ubah|update|rubah|ganti> budget <kategori> [jadi|menjadi] <nominal>`, delete `<hapus|delete|buang> budget <kategori>`. Scope is category-wide ONLY (wallet-scoped budgets are API-managed — the handler never passes a `walletId`). Create/update resolve the category by EXACT name and execute immediately (no fuzzy `matchCategoryName`): absent → the category-not-found reply, ambiguous (several categories share the name) → refusal with 0 writes; delete opens `AWAITING_BUDGET_CONFIRM` (section 12.1) with ownership + existence re-checked at commit. A message with the budget word but no recognized verb that ASKS for status/list ("budget berapa ya?", "lihat budget dong") gets a read-only progress list (this month's spent/target/percent, backend-computed); any other verb-less mention gets static usage help. Category ties (section 7.2): rename cascades budgets; delete is blocked while `countBudgetsForCategory > 0`.
 
 Routed through `frontend/app/api/budgets/route.ts` + `[id]/route.ts` (NextAuth session scoping in application code — same ownership pattern as sections 4.4–4.6); backend twin `backend/src/domain/budgets.js` + `backend/src/db/queries/budgets.js`; shared amount/scope/month rules in `frontend/lib/budgets.ts`.
 
@@ -456,7 +465,7 @@ Built-in defaults (closed set, locked — present for every user, not rows in `u
 On top of those, each user may add custom categories (migration `20260930173900_add_user_categories.sql`):
 - **Name rules:** 2–40 characters after whitespace normalization; first char letter/number, then letters/numbers/spaces plus `& ' ( ) . -`; no emoji, slash, or comma (`backend/src/domain/categories.js`, mirrored for the dashboard API in `frontend/lib/categories.ts`).
 - **Uniqueness & cap:** unique per user, case-insensitive (`UNIQUE (user_id, lower(name))`); a custom name may not collide with a default; max 50 custom categories per user.
-- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (one of 17 classifier enum values since Sprint D4 — the `transfer` intent joined in D4) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
+- **Channels (both, always the same active list):** chat commands — `tambah/buat/bikin kategori X`, `ganti nama kategori X jadi Y` / `rename kategori X jadi Y`, `hapus kategori X`, intent `category_manage` (one of 18 classifier enum values since the Phase 2 fixes — `transfer` joined in Sprint D4, `goal_manage` in Phase 2) — and the dashboard: `/api/categories` (section 4.5) + Settings → Categories (defaults shown locked, custom rows rename/delete; delete disabled while `active_transaction_count > 0`, AlertDialog confirmation otherwise).
 - **Delete semantics (locked):** defaults are never deletable (API `403 default`); a category still referenced by ACTIVE transactions or by a budget (Sprint D3) is rejected with the counts (chat reply names both blockers / API `409 in_use` + `activeCount` + `budgetCount`), no confirmation opens; otherwise confirmation in chat ("ya" re-counts at commit time) or Settings dialog. A delete NEVER writes to transactions or budgets — soft-deleted history keeps its historical label.
 - **Rename cascade:** that user's ACTIVE transactions (`deleted_at IS NULL`) AND their budgets (Sprint D3 — `budgets.category` follows the name); other users never touched; defaults not renameable.
 - **Invariant:** every ACTIVE transaction's category is in the user's active list — application-enforced (the DB CHECK on `transactions.category` was dropped in migration `20260930173900` because custom names can't be pre-enumerated).
@@ -683,6 +692,10 @@ States (as implemented):
   AWAITING_DIRECTION      — bot asked "masuk atau keluar?", waiting for reply
   AWAITING_GOAL_TARGET    — mid-flow creating a goal (target amount step)
   AWAITING_GOAL_DEADLINE  — mid-flow creating a goal (deadline step)
+  AWAITING_GOAL_TITLE     — goal creation fallback (Phase 2): the request carried no object
+                            ("mau nabung"), so the title is asked instead of inventing a
+                            placeholder; the handler resumes at whatever step is still
+                            missing (title → amount → deadline → insert)
   AWAITING_DELETE_CONFIRMATION — delete flow: pick target, then explicit "ya"/"batal" confirmation (a delete never runs before the "ya")
   AWAITING_EDIT_UPDATE    — edit flow: waiting for the one missing piece (which transaction, or what change)
   AWAITING_CATEGORY_CONFIRM  — category delete flow (Sprint D1): explicit "ya"/"batal"; "ya" re-counts
@@ -697,6 +710,11 @@ States (as implemented):
                                 existence at commit time (budget create/update execute immediately, so they need
                                 no state); on any other recognized intent the handler hands back to the router
                                 with the pending delete dropped (Sprint C pattern)
+  AWAITING_GOAL_CONFIRM       — goal rename + goal delete flow (Phase 2): explicit "ya"/"batal" for the step that
+                                changes the row; an ambiguous target first asks WHICH goal by number (that step
+                                writes nothing) and a rename without "jadi ..." first asks for the new name -
+                                the row is only touched on the final "ya", with user_id scoping re-checked by
+                                the query itself
 
   (This supersedes the original draft list, which named
   AWAITING_CORRECTION_TARGET and AWAITING_ONBOARDING_NAME. Neither was

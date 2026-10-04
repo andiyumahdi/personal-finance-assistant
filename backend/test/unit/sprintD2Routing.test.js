@@ -82,14 +82,21 @@ describe('collision matrix: wallet_manage vs the older intents', () => {
   test('goal language keeps its routing (Sprint C exclusion applies)', () => {
     assert.equal(detectIntent('mau nabung buat dompet baru'), 'goal_start');
     assert.equal(detectIntent('mau nabung buat wallet impian'), 'goal_start');
-    assert.equal(detectIntent('hapus goal'), 'unclear');
+    // Phase 2 (Priority 7): goal delete has its own confirmed flow; the
+    // Sprint C exclusion still holds - it is not a transaction delete.
+    assert.equal(detectIntent('hapus goal'), 'goal_manage');
   });
 
-  test('a wallet mention without a dedicated verb is not a wallet command', () => {
-    assert.equal(detectIntent('ada dompet apa aja?'), 'unclear');
-    assert.equal(detectIntent('lihat dompet dong'), 'unclear');
-    // capability question -> the classifier (product_question) decides
-    assert.equal(detectIntent('apakah bisa pindahin uang antar dompet?'), 'unclear');
+  test('a wallet LIST/STATUS request is answered, never a write (Priority 4)', () => {
+    // D2's original mandate: a wallet mention WITHOUT a dedicated verb is
+    // not a wallet command (it must not create/rename/archive/delete).
+    // Phase 2 keeps that AND answers the read instead of dropping it to
+    // 'unclear' - with the real wallets and balances, read-only.
+    assert.equal(detectIntent('ada dompet apa aja?'), 'wallet_manage');
+    assert.equal(detectIntent('lihat dompet dong'), 'wallet_manage');
+    // Capability question -> knowledge (Priority 5), still not a wallet
+    // command and no longer a coin-flip at the classifier.
+    assert.equal(detectIntent('apakah bisa pindahin uang antar dompet?'), 'product_question');
   });
 
   test('recap / help / dashboard / greeting / small_talk regressions', () => {
@@ -163,8 +170,8 @@ describe('parseWalletManageMessage (pure parser)', () => {
 });
 
 describe('classifier enum <-> handler map sync (D2 mandate)', () => {
-  test("enum is 17 (D3 added budget_manage, D4 transfer) and both sides match exactly", () => {
-    assert.equal(INTENT_CATEGORIES.length, 17);
+  test("enum is 18 (D3 added budget_manage, D4 transfer, Phase 2 goal_manage) and both sides match exactly", () => {
+    assert.equal(INTENT_CATEGORIES.length, 18);
     assert.deepEqual(Object.keys(INTENT_HANDLERS).sort(), [...INTENT_CATEGORIES].sort());
   });
 
@@ -191,7 +198,7 @@ describe('classifier enum <-> handler map sync (D2 mandate)', () => {
   });
 });
 
-describe('Sprint D2 state machine (7 -> 8, D3 -> 9)', () => {
+describe('Sprint D2 state machine (7 -> 8, D3 -> 9, Phase 2 -> 11)', () => {
   test('AWAITING_WALLET_CONFIRM exists; every earlier state intact and ordered', () => {
     assert.equal(STATES.AWAITING_WALLET_CONFIRM, 'AWAITING_WALLET_CONFIRM');
     assert.deepEqual(Object.keys(STATES), [
@@ -199,11 +206,13 @@ describe('Sprint D2 state machine (7 -> 8, D3 -> 9)', () => {
       'AWAITING_DIRECTION',
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
+      'AWAITING_GOAL_TITLE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
       'AWAITING_WALLET_CONFIRM',
       'AWAITING_BUDGET_CONFIRM',
+      'AWAITING_GOAL_CONFIRM',
     ]);
   });
 });

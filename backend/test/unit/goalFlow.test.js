@@ -148,7 +148,10 @@ describe('goal flow: neither state traps the conversation (Sprint C rule)', () =
 
     assert.match(trace.reply, /Target berapa/);
     assert.equal(userRow().state, STATES.AWAITING_GOAL_TARGET, 'restarted, not dated against 15 juta');
-    assert.deepEqual(userRow().state_context, {}, 'old target amount dropped');
+    // Phase 2 (Priority 7): the restarted flow keeps the title derived from
+    // the NEW request ("mau nabung buat motor" -> "motor"); the OLD target
+    // amount is what must be dropped, and it is.
+    assert.deepEqual(userRow().state_context, { goalTitle: 'motor' }, 'old target amount dropped');
     assert.equal(fake.tables.goals.length, 0);
   });
 });

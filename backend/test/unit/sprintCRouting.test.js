@@ -54,7 +54,14 @@ describe('detectIntent: no collisions with older intents', () => {
     assert.equal(detectIntent('rekap minggu ini dong'), 'recap');
     assert.equal(detectIntent('hari ini habis berapa?'), 'recap');
     assert.equal(detectIntent('pengeluaran bulan ini gimana'), 'recap');
-    assert.equal(detectIntent('lihat pengeluaran gua dong'), 'recap');
+    // P2-A DELIBERATE CONTRACT CHANGE (documented 2026-10-04): a READ-VERB
+    // phrasing of the spending noun - "lihat pengeluaran gua dong", the same
+    // shape as the audit-mandated "tunjukin pengeluaran gue" - is now a
+    // transaction LIST, not the all-time totals recap. Chat Intelligence
+    // Audit P2-A section 4 lists exactly this defect ("sebagian pertanyaan
+    // list/search masih jatuh ke recap generik"). The statement/question
+    // forms around it keep their recap slot unchanged (lines below).
+    assert.equal(detectIntent('lihat pengeluaran gua dong'), 'transaction_search');
     // "cari tau" is filler, not a history search
     assert.equal(detectIntent('cari tau pengeluaran gua dong'), 'recap');
   });
@@ -93,7 +100,11 @@ describe('detectIntent: no collisions with older intents', () => {
   });
 
   test('goal-flavored delete mentions are not delete requests', () => {
-    assert.equal(detectIntent('hapus goal'), 'unclear');
+    // Phase 2 (Priority 7): "hapus goal" is now a real goal-delete flow
+    // (target matched, then "ya"/"batal" confirmed - nothing written until
+    // then), so it routes to goal_manage instead of the classifier. The
+    // Sprint C exclusion still holds: it is NOT a transaction delete.
+    assert.equal(detectIntent('hapus goal'), 'goal_manage');
     assert.equal(detectIntent('batalkan goal dong'), 'unclear');
   });
 
@@ -144,21 +155,26 @@ describe('classifier enum <-> handler map sync (Sprint C mandate)', () => {
 });
 
 describe('Sprint C states exist alongside the existing ones', () => {
-  test('STATES keeps pre-Sprint-C states; C added two, D1/D2/D3 one each', () => {
+  test('STATES keeps pre-Sprint-C states; C added two, D1/D2/D3 one each, Phase 2 two', () => {
     // Lock updated in Sprint D1 (AWAITING_CATEGORY_CONFIRM), D2
     // (AWAITING_WALLET_CONFIRM) and D3 (AWAITING_BUDGET_CONFIRM) - the
     // state list, classifier enum, and handler map must always move
-    // together.
+    // together. Phase 2 added AWAITING_GOAL_TITLE (fallback when the goal
+    // request carried no title) and AWAITING_GOAL_CONFIRM (goal
+    // rename/delete confirmation), both directly after the goal states
+    // they belong to.
     assert.deepEqual(Object.keys(STATES), [
       'IDLE',
       'AWAITING_DIRECTION',
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
+      'AWAITING_GOAL_TITLE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
       'AWAITING_WALLET_CONFIRM',
       'AWAITING_BUDGET_CONFIRM',
+      'AWAITING_GOAL_CONFIRM',
     ]);
   });
 });
