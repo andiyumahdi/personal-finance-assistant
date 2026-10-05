@@ -33,11 +33,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // Returning user - google_id already linked to a phone-number row.
       const { data: existingUser } = await supabase
         .from('users')
-        .select('id')
+        .select('id, google_email')
         .eq('google_id', profile.sub)
         .maybeSingle();
 
       if (existingUser) {
+        // DEC-1 (V2 Phase 5, A-2/A-3): refresh the stored Google email from
+        // the live profile - auth.ts is the ONLY writer of
+        // users.google_email, which is what lets chat name the exact linked
+        // account instead of guessing (brief section 18). Enrichment only,
+        // deliberately unchecked: a failed refresh must never block sign-in
+        // or identity resolution (the session carries the profile email
+        // either way), and the row is touched only when the value changed.
+        if (profile.email && existingUser.google_email !== profile.email) {
+          await supabase
+            .from('users')
+            .update({ google_email: profile.email })
+            .eq('id', existingUser.id);
+        }
         return true;
       }
 
@@ -70,7 +83,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // SPECIFICATION.md section 11.5.
       const { error: updateError } = await supabase
         .from('users')
-        .update({ google_id: profile.sub, link_token: null, link_token_expires: null })
+        .update({
+          google_id: profile.sub,
+          // DEC-1 (V2 Phase 5, A-2/A-3): capture the Google profile email at
+          // first link. profile.email is null only when the provider
+          // withholds it - stored as null, never invented (brief section 18,
+          // chat falls back to its honest "cannot see" branch).
+          google_email: profile.email ?? null,
+          link_token: null,
+          link_token_expires: null,
+        })
         .eq('id', pendingUser.id);
 
       if (updateError) {

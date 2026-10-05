@@ -279,6 +279,7 @@ export function seedUser(id, phone, overrides = {}) {
     state_context: {},
     last_deleted_transaction_id: null,
     google_id: null,
+    google_email: null, // DEC-1 (V2 Phase 5): written only at Google sign-in
     link_token: null,
     link_token_expires: null,
     created_at: atWibDay(-60),

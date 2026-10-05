@@ -24,6 +24,22 @@ function ago(ms) {
   return new Date(Date.now() - ms).toISOString();
 }
 
+/**
+ * A timestamp at 12:00 WIB on the day `days` before the current WIB day.
+ * Used by the date-narrowing fixtures so they are valid at ANY wall-clock
+ * time (the relative-hour form - ago(N * HOUR) - silently changes which
+ * side of midnight a row lands on, which made the "kemarin" test fail
+ * whenever it ran shortly after midnight; expectation unchanged, fixture
+ * made deterministic - V2 Phase 5 verification).
+ */
+function wibNoonDaysAgo(days) {
+  const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const asWibClock = new Date(Date.now() + WIB_OFFSET_MS);
+  asWibClock.setUTCHours(12, 0, 0, 0);
+  asWibClock.setUTCDate(asWibClock.getUTCDate() - days);
+  return new Date(asWibClock.getTime() - WIB_OFFSET_MS).toISOString();
+}
+
 function makeTx(id, userId, overrides = {}) {
   return {
     id,
@@ -182,15 +198,29 @@ describe('search flow', () => {
   });
 
   test('"kemarin" narrows to yesterday only', async () => {
+    // Fixture note (V2 Phase 5 verification): rows are placed on explicit
+    // WIB calendar days instead of relative hours - the shared fixture's
+    // ago(1-3h) rows and the old now-26h row only landed on the correct
+    // sides of midnight when the suite ran after ~03:00, making this test
+    // wall-clock-flaky (proven pre-existing: it failed identically on the
+    // clean tree at 00:14). The expectation is unchanged - and now pinned
+    // harder with the result count.
+    fake.tables.transactions.length = 0;
     fake.tables.transactions.push(
-      makeTx('tx-old', 'user-a', {
+      makeTx('tx-yesterday', 'user-a', {
         amount: 44000,
         raw_text: 'makan kemarin 44rb',
-        created_at: new Date(Date.now() - 26 * HOUR).toISOString(),
+        created_at: wibNoonDaysAgo(1),
+      }),
+      makeTx('tx-today', 'user-a', {
+        amount: 25000,
+        raw_text: 'jajan mixue 25rb',
+        created_at: wibNoonDaysAgo(0),
       }),
     );
 
     const trace = await handleIncomingMessage(PHONE_A, 'cari transaksi kemarin');
+    assert.match(trace.reply, /Ketemu 1 transaksi/);
     assert.match(trace.reply, /44\.000/);
     assert.ok(!trace.reply.includes('25.000')); // today's rows excluded
   });

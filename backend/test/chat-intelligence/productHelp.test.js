@@ -9,8 +9,12 @@
 //     correct answer through the live classifier (or not at all), and
 //     feature-location questions ("gimana cara lihat budget di web?")
 //     got an unrelated reply;
-//   - section 4: the backend stores NO email - an email question must be
-//     answered honestly, never with a guess;
+//   - section 4 (V2 Phase 5, §41 / contract C6 + A-2/A-3): UPDATED -
+//     DEC-1 now stores google_email, so a WHICH-account question is
+//     answered with the EXACT address (or the honest "cannot see" /
+//     "not linked" branch) instead of the pre-DEC-1 "backend stores no
+//     email" essay. The honesty rule itself is unchanged: no guess, no
+//     fabricated address, still zero token, zero writes;
 //   - PK-11: "kenapa login lewat WA?" expected the REASON from PRODUCT_
 //     KNOWLEDGE section 9, not just the flow;
 //   - section 10: product/web/login/help questions produce ZERO domain
@@ -150,35 +154,49 @@ describe('Section 8: a feature-location question goes to product knowledge', () 
   }
 });
 
+// §41 (V2 Phase 5, UX contract A-2/A-3 + section 13 change log C6,
+// DEC-1): these three pins CHANGED INTENTIONALLY. OLD: every account/
+// email question -> generic "informational" facts and "Nera nggak bisa
+// lihat alamat email" (the table had no email column). NEW: a WHICH-
+// account ask is claimed by the identity sub-route and answered from
+// users.google_email - exact address when known, brief section 18
+// branch 2 when the legacy row has none, "Belum ada akun ..." when
+// unlinked. Unchanged and still pinned: intent routing, NO credential,
+// NO writes, NO fabricated address.
 describe('Section 4: login/account answers only what the backend actually knows', () => {
-  test('"gue login pake apa?" -> Google-first facts, no token, no email invented', async () => {
+  test('"gue login pake apa?" -> the exact known state (A-2), no token, no email invented', async () => {
     const trace = await send(PHONE_A, 'gue login pake apa?');
 
     assert.equal(trace.intent, 'dashboard_link');
-    assert.equal(trace.dashboardLinkOutcome, 'informational');
-    assert.match(trace.reply, /akun Google/, 'the provider comes from PRODUCT_KNOWLEDGE section 8');
+    assert.equal(trace.dashboardLinkOutcome, 'identity_read');
+    assert.match(trace.reply, /Belum ada akun Google yang terhubung/, 'unlinked - the honest state, not a provider essay');
+    assert.ok(!trace.reply.includes('@'), 'no address for an unlinked row');
     assert.ok(!tokenIn(trace.reply));
     assert.equal(userRow(db, PHONE_A).link_token, null);
     assert.equal(trace.dbAction, undefined);
   });
 
-  test('"akun Google gue apa?" (linked) -> the user\'s OWN linked state', async () => {
-    db = setupDb({ users: [seedUser(USER_A, PHONE_A, { google_id: 'google-abc' })] });
+  test('"akun Google gue apa?" (linked, legacy row) -> section 18 branch 2, no guess', async () => {
+    db = setupDb({
+      users: [seedUser(USER_A, PHONE_A, { google_id: 'google-abc' })],
+    });
 
     const trace = await send(PHONE_A, 'akun Google gue apa?');
 
-    assert.equal(trace.dashboardLinkOutcome, 'informational');
-    assert.match(trace.reply, /udah tersambung ke Google/);
+    assert.equal(trace.dashboardLinkOutcome, 'identity_read');
+    assert.match(trace.reply, /belum bisa melihat email Google/, "honest: DEC-1 has not seen this row's email yet");
+    assert.match(trace.reply, /Settings -> Profile/, 'and says where to look instead');
+    assert.ok(!trace.reply.includes('@'), 'never a fabricated address');
     assert.ok(!tokenIn(trace.reply));
     assert.equal(userRow(db, PHONE_A).link_token, null);
   });
 
-  test('"email yang nyambung apa?" -> honest: no email is visible, no guess', async () => {
+  test('"email yang nyambung apa?" (unlinked) -> "Belum ada ...", no guess', async () => {
     const trace = await send(PHONE_A, 'email yang nyambung apa?');
 
-    assert.equal(trace.dashboardLinkOutcome, 'informational');
-    assert.match(trace.reply, /nggak bisa lihat alamat email/);
-    assert.doesNotMatch(trace.reply, /@/, 'no fabricated or real address');
+    assert.equal(trace.dashboardLinkOutcome, 'identity_read');
+    assert.match(trace.reply, /Belum ada akun Google yang terhubung/, 'the honest state first');
+    assert.ok(!trace.reply.includes('@'), 'no fabricated or real address');
     assert.ok(!tokenIn(trace.reply), 'asking never mints a credential');
     assert.equal(userRow(db, PHONE_A).link_token, null);
     assert.equal(trace.dbAction, undefined);

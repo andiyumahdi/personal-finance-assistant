@@ -1091,6 +1091,70 @@ function isPeriodScopedRecap(lower) {
 const ACCOUNT_NUMBER_CHANGE_PATTERN =
   /\b(?:ganti|ubah|pindah(?:in|kan)?|tukar|tuker|gonta[-\s]?ganti)\s+(?:nomor|nomer)\b/;
 
+/**
+ * V2 Phase 5 (A-4, contract section 9 / brief section 19): "ganti akun
+ * google" is an account-surface request, never a data write. The statement
+ * form used to match NO slot and fell to 'unclear' (audit: classifier
+ * improvisation risk). The change verb must sit directly before
+ * akun|account|google, so "ganti nama dompet", "ganti budget" and the
+ * nomor pattern owned above keep their exact routes.
+ */
+const ACCOUNT_SWITCH_PATTERN =
+  /\b(?:ganti|ubah|tukar(?:i)?|tuker|gonta[-\s]?ganti|pindah(?:in|kan)?|(?:ny)?sambung(?:in|kan)?)\s+(?:akun|account|google)\b/;
+
+/**
+ * V2 Phase 5 (A-5, audit G5): "cara logout?" / "logout dong" had NO
+ * deterministic reply - they fell to 'unclear' (help dump or classifier
+ * improvisation). "logout" is account-surface vocabulary only in this
+ * product; the "keluar dari ..." alternative requires an explicit account
+ * noun so money sentences ("uang keluar dari ..." shapes) can never match.
+ */
+const LOGOUT_ASK_PATTERN =
+  /\blog\s?out\b|\bkeluar\s+dari\s+(?:akun|account|dashboard|google|web(?:site)?)\b/;
+
+/** A "kenapa ..." phrasing of those asks wants the REASON, not the steps -
+ * it keeps the informational facts path (buildDashboardInfoReply) below. */
+const ACCOUNT_ACTION_REASON_PATTERN =
+  /\b(?:kenapa|mengapa|kenape|ngapain|buat\s+apa)\b/;
+
+function isLogoutAsk(lower) {
+  return LOGOUT_ASK_PATTERN.test(lower) && !ACCOUNT_ACTION_REASON_PATTERN.test(lower);
+}
+
+function isAccountSwitchAsk(lower) {
+  return ACCOUNT_SWITCH_PATTERN.test(lower) && !ACCOUNT_ACTION_REASON_PATTERN.test(lower);
+}
+
+/**
+ * V2 Phase 5 (A-2, brief section 18 + DEC-1): a WHICH-account ask - "akun
+ * google gua yang mana?", "login pakai akun apa?", "email gua yang mana?".
+ * Needs an identity noun AND an open question word, so "webnya mana?" (no
+ * identity noun) and "gimana cara login?" (no \bmana\b/\bapa\b boundary)
+ * keep the general facts path, which A-3 upgrades separately.
+ */
+function isGoogleIdentityAsk(lower) {
+  if (!/\b(?:mana|apa(?:kan)?)\b/.test(lower)) return false;
+  return /\b(?:email|akun|account|google|login)\b/.test(lower);
+}
+
+/**
+ * V2 Phase 5 (A-8, brief Journey A step 2): "gue mau catat pengeluaran"
+ * states the INTENT to RECORD - no amount (that would already be a
+ * transaction) and no period (that would be a recap ask). Question forms
+ * ("cara catat ...?") stay product knowledge; every existing recording,
+ * recap and knowledge route is guarded here so it keeps its path.
+ */
+const RECORD_INTENT_PATTERN =
+  /\b(?:mau|mo|ingin|pengen|akan|mulai)\s+(?:nyat(?:et|at)|cat(?:at|et))\b/;
+
+function isRecordIntentAsk(lower) {
+  if (!RECORD_INTENT_PATTERN.test(lower)) return false;
+  if (isQuestionMessage(lower)) return false;
+  if (parseMoneyAmount(lower) !== null) return false;
+  if (hasPeriodSignal(lower)) return false;
+  return true;
+}
+
 export function detectIntent(rawText) {
   const lower = rawText.toLowerCase().trim();
 
@@ -1127,6 +1191,17 @@ export function detectIntent(rawText) {
   // so every existing write path keeps its route; no slot owns "nomor" anyway
   // (the product has no phone-number concept), so nothing here is stolen.
   if (ACCOUNT_NUMBER_CHANGE_PATTERN.test(lower)) return 'product_question';
+
+  // V2 Phase 5 (A-4/A-5): logout and Google-account switching are account-
+  // surface ANSWERS with dedicated pinned replies in handleDashboardLinkIntent
+  // - never data flows, never a minted credential, never classifier
+  // improvisation. Claimed ahead of every read/write slot: no slot owns
+  // these words, so nothing is stolen, and both the statement form
+  // ("ganti akun google" - previously 'unclear') and the question form
+  // ("cara logout?" - previously 'unclear' or a help dump) now land on the
+  // exact reply the contract pins.
+  if (isLogoutAsk(lower)) return 'dashboard_link';
+  if (isAccountSwitchAsk(lower)) return 'dashboard_link';
 
   // Priority 4: reads/list/status answer with backend facts. Safe reads are
   // never gated - except when the user is asking HOW to do it (then the
@@ -1186,6 +1261,14 @@ export function detectIntent(rawText) {
   if (isTransactionListRequest(lower)) return 'transaction_search';
 
   // Priority 1: recap by keyword, or by period + spending/follow-up shape.
+  // V2 Phase 5 (A-8, Journey A): a stated intent to record with no amount
+  // and no period gets the deterministic how-to (RECORD_HINT_REPLY via the
+  // help handler) instead of recap data - "Belum ada catatan di periode
+  // itu ya" never explained anything. Stays 'help' so the classifier enum
+  // (INTENT_CATEGORIES) is untouched; every how-to question, amount and
+  // period shape is excluded inside isRecordIntentAsk.
+  if (isRecordIntentAsk(lower)) return 'help';
+
   if (RECAP_KEYWORDS.some((kw) => lower.includes(kw))) return 'recap';
   if (isPeriodScopedRecap(lower)) return 'recap';
 
@@ -3276,6 +3359,17 @@ async function shouldSendOnboarding(user) {
   return recorded === 0;
 }
 
+/**
+ * V2 Phase 5 (A-8, brief Journey A step 2): the natural how-to for a
+ * stated intent to record ("gue mau catat pengeluaran"). Pinned copy -
+ * deterministic, zero AI, and it explicitly kills the login wall (section
+ * 21: chat works without the dashboard).
+ */
+const RECORD_HINT_REPLY =
+  'Gampang - langsung tulis aja kalimatnya di sini, misalnya:\n\n' +
+  '"jajan 20rb" atau "gaji 5jt"\n\n' +
+  'Nera langsung nyatetnya. Nggak perlu buka dashboard atau login kok.';
+
 /** Structured tier: heading + bullets (<=5) + one closing line. */
 function buildOnboardingReply() {
   const url = dashboardBaseUrl();
@@ -3310,6 +3404,20 @@ function buildHelpReply() {
 }
 
 async function handleHelpIntent(user, rawText, trace) {
+  // V2 Phase 5 (A-8, Journey A step 2): a stated intent to record with no
+  // amount gets the natural how-to FIRST - before onboarding (whose intro
+  // the user may already have seen at first contact) and before the
+  // capability list. Deterministic, zero AI, no login wall (brief section
+  // 21). The shape check runs on the raw text so a "bantuan, mau catat ..."
+  // phrasing still lands here identically.
+  if (isRecordIntentAsk(String(rawText ?? '').toLowerCase())) {
+    trace.recordHint = true;
+    return {
+      reply: RECORD_HINT_REPLY,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
   // First contact gets the introduction (which SUPERSEDES the plain list:
   // it covers capabilities, the web and a first command); every later ask
   // gets the list.
@@ -3373,17 +3481,22 @@ function dashboardBaseUrl() {
  * (Phase 2, Priority 5): facts only, no credential. Sources: SPEC 2.5 +
  * PRODUCT_KNOWLEDGE section 8 (Google login, first link comes from the
  * bot, later logins are plain Google) for the flow, the user's OWN row
- * (google_id) for the linked/unlinked state, and the configured
- * DASHBOARD_BASE_URL for the address. Nothing about the account, the
- * provider or the data is invented.
+ * (google_id + google_email) for the linked/unlinked state, and the
+ * configured DASHBOARD_BASE_URL for the address. Nothing about the
+ * account, the provider or the data is invented.
  *
  * P2-C additions (asked-for facts only, still zero credential):
- *   - an EMAIL question gets the honest answer - the users table has no
- *     email column, so Nera cannot see one and must not guess (section 4);
+ *   - an EMAIL question gets the honest answer - DEC-1 (V2 Phase 5, A-3):
+ *     the exact stored google_email when known, the "not readable from
+ *     here" truth for a legacy linked row, never a guess;
  *   - a "kenapa ... login?" question gets PRODUCT_KNOWLEDGE section 9's
  *     actual reason (audit PK-11 expected the reason, not just the flow);
  *   - the address comes from dashboardBaseUrl() - production can no longer
  *     fall back to a dead localhost link.
+ * V2 Phase 5 (A-3): the linked branch never repeats the "same Google
+ * account" line without carrying the identity on the same line - exact
+ * email when DEC-1 knows it, an explicit "read it in Settings -> Profile"
+ * when it does not.
  * Structured tier: heading + bullets, capped at 5 (RESPONSE_FORMATTING).
  */
 function buildDashboardInfoReply(user, rawText = '') {
@@ -3396,8 +3509,15 @@ function buildDashboardInfoReply(user, rawText = '') {
   const extras = [];
   if (asksEmail) {
     extras.push(
-      '- Soal email: Nera nggak bisa lihat alamat email dari sini - yang ' +
-        'nyambung ke WhatsApp cuma nomor kamu, dan Nera nggak akan nebak.',
+      user.google_email
+        ? `- Soal email: yang terhubung ${user.google_email} - dipakai buat login ` +
+          'dashboard, tampil juga di Settings - Profile.'
+        : user.google_id
+          ? '- Soal email: email Google kamu belum kebaca dari sini. Yang nyambung ' +
+            'ke WhatsApp tetap nomor kamu - cek bagian Settings - Profile di ' +
+            'dashboard buat lihat akun yang dipakai.'
+          : '- Soal email: Nera nggak bisa lihat alamat email dari sini - yang ' +
+            'nyambung ke WhatsApp cuma nomor kamu, dan Nera nggak akan nebak.',
     );
   }
   if (wantsWhy) {
@@ -3412,9 +3532,14 @@ function buildDashboardInfoReply(user, rawText = '') {
 
   if (user.google_id) {
     // Linked: URL + up to both extras still fits under the 5-bullet cap.
-    const linkedFacts =
-      'Akun kamu udah tersambung ke Google kok, jadi tinggal buka alamatnya ' +
-      'dan login pakai akun Google yang sama ya.';
+    // A-3 grep pin: every line carrying the "same Google account" literal
+    // carries the google_email identity too - the identity-less form is
+    // the else branch below.
+    const linkedFacts = user.google_email
+      ? `Akun kamu udah tersambung ke Google: ${user.google_email} - jadi tinggal buka alamatnya dan login pakai akun Google yang sama ya.`
+      : 'Akun kamu udah tersambung ke Google kok - tinggal buka alamatnya. ' +
+        'Emailnya belum kebaca dari sini, cek bagian Settings - Profile di ' +
+        'dashboard buat akun yang dipakai.';
     const extraBlock = extras.length ? `${extras.join('\n')}\n\n` : '';
     return header + extraBlock + linkedFacts;
   }
@@ -3428,6 +3553,95 @@ function buildDashboardInfoReply(user, rawText = '') {
   // URL + at most one asked-for extra + 3 base = never more than 5.
   const bullets = [...extras.slice(0, 1), ...base];
   return header + `${bullets.join('\n')}`;
+}
+
+/**
+ * V2 Phase 5 (A-5, audit G5): CONCRETE dashboard logout steps - verified
+ * against frontend/components/layout/user-menu.tsx (avatar/name menu ->
+ * "Log out" -> confirm dialog "Log out of Nera?" -> /login). Never a
+ * help-menu dump, never classifier improvisation; the closing line states
+ * the honest fact that sign-out only ends the browser session.
+ */
+function buildLogoutReply() {
+  return (
+    '*Cara logout di dashboard:*\n\n' +
+    '1. Klik nama/avatar lo di pojok kanan atas.\n' +
+    '2. Pilih *Log out*.\n' +
+    '3. Konfirmasi di pop-up "Log out of Nera?" - selesai, lo dibalikin ke ' +
+    'halaman login.\n\n' +
+    'Logout cuma mutus sesi di browser itu aja - data lo tetap tersimpan.'
+  );
+}
+
+/**
+ * V2 Phase 5 (A-4, brief section 19 + CR-4 + PK 10 FAQ): the account-
+ * switching flow, grounded in the REAL mechanics:
+ *   - logout via the avatar menu (same verified UI as A-5), then sign in
+ *     again with another Google account - Auth.js resolves that Google
+ *     identity against ITS OWN row and shows that account's dashboard
+ *     (never this row's data, never a merge);
+ *   - a Google account that has never been linked CANNOT be linked from a
+ *     number that is already linked (the bot refuses a second token; no
+ *     rebind mechanism exists) - PK 10 states this limitation and we keep
+ *     it honest instead of promising a flow that does not exist;
+ *   - an UNLINKED number gets the fresh bot token ("re-binding via fresh
+ *     bot token when needed" - it is needed exactly here);
+ *   - CR-4: data ownership never moves - one users row = one WhatsApp
+ *     number; Google is only the key to the door.
+ */
+function buildAccountSwitchReply(user) {
+  if (!user.google_id) {
+    return (
+      'Nomor lo belum tersambung ke akun Google mana pun, jadi belum ada yang ' +
+      'perlu diganti.\n\n' +
+      `Mau nyambungin? Ketik *dashboard* - nanti dikirim link connect ` +
+      `(berlaku ${LINK_TOKEN_EXPIRY_MINUTES} menit, sekali pakai).`
+    );
+  }
+  return (
+    '*Cara ganti akun Google:*\n\n' +
+    '1. Logout dulu - klik nama/avatar lo di pojok kanan atas, pilih *Log out*.\n' +
+    '2. Login lagi pakai akun Google lain.\n\n' +
+    'Yang perlu lo tau:\n' +
+    '- Data lo tetap nempel di nomor WhatsApp lo - akun Google cuma kunci ' +
+    'masuknya, jadi isinya nggak pernah ikut pindah atau kegabung sama akun ' +
+    'lain.\n' +
+    '- Akun Google lain harus udah pernah tersambung sebelumnya. Sambungin ' +
+    'ulang ke akun baru dari nomor ini belum tersedia - nomor lo masih ' +
+    'terhubung ke akun Google yang pertama kali dipakai.'
+  );
+}
+
+/**
+ * V2 Phase 5 (A-2, brief section 18 + DEC-1): the EXACT linked-account
+ * answer - three honest branches, never a guess:
+ *   1. linked + stored google_email -> the exact value + the switching
+ *      hint from section 18's own example;
+ *   2. linked + no stored email (legacy row - DEC-1 is written at Google
+ *      sign-in, so it is null until the next one) -> section 18's own
+ *      "cannot see it from chat, check Settings -> Profile" copy;
+ *   3. not linked -> say so plainly + how to link (bot token flow).
+ */
+function buildGoogleAccountReply(user) {
+  if (!user.google_id) {
+    return (
+      'Belum ada akun Google yang terhubung ke nomor ini.\n\n' +
+      `Mau nyambungin? Ketik *dashboard* - nanti dikirim link connect ` +
+      `(berlaku ${LINK_TOKEN_EXPIRY_MINUTES} menit, sekali pakai).`
+    );
+  }
+  if (user.google_email) {
+    return (
+      `Dashboard lo sekarang terhubung ke: *${user.google_email}*\n\n` +
+      'Kalau itu bukan akun yang lo mau, lo bisa logout lalu login pakai akun ' +
+      'Google lain. Data lo tetap nempel di nomor WhatsApp lo.'
+    );
+  }
+  return (
+    'Gue belum bisa melihat email Google yang terhubung dari sisi chat. ' +
+    'Cek bagian *Settings -> Profile* di dashboard buat lihat akun yang ' +
+    'sedang terhubung.'
+  );
 }
 
 /**
@@ -3449,6 +3663,38 @@ function buildDashboardInfoReply(user, rawText = '') {
  * for the plain command form ("dashboard", "login dong").
  */
 async function handleDashboardLinkIntent(user, rawText, trace) {
+  // V2 Phase 5 (A-2/A-4/A-5): the three account-surface asks own the
+  // FIRST word here - each has a dedicated pinned reply and must never
+  // fall through to the generic facts bullets (A-4 audit: misrouted), a
+  // help dump (A-5 audit: no reply existed) or classifier improvisation.
+  // outcome is observable on the trace (GC-9 style); none of these paths
+  // writes anything, and none mints a credential.
+  const lowerText = String(rawText ?? '').toLowerCase();
+  if (isLogoutAsk(lowerText)) {
+    trace.dashboardLinkOutcome = 'logout_help';
+    return {
+      reply: buildLogoutReply(),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (isAccountSwitchAsk(lowerText)) {
+    trace.dashboardLinkOutcome = 'switch_help';
+    return {
+      reply: buildAccountSwitchReply(user),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  if (isGoogleIdentityAsk(lowerText)) {
+    trace.dashboardLinkOutcome = 'identity_read';
+    return {
+      reply: buildGoogleAccountReply(user),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
   // P2-C: a QUESTION ("webnya mana?") and a bare web/link request ("kasih
   // link web dong", "buka website") are DISCOVERY - answered with the
   // address and flow. Only the explicit connect commands ("dashboard",
@@ -3468,8 +3714,15 @@ async function handleDashboardLinkIntent(user, rawText, trace) {
 
   if (user.google_id) {
     trace.dashboardLinkOutcome = 'already_linked';
+    // V2 Phase 5 (A-3): identity on the reply - exact email when DEC-1
+    // knows it, an explicit pointer to Settings -> Profile when the
+    // legacy row has none. The identity-less "yang sama" form is gone.
     return {
-      reply: 'Akun kamu udah kesambung ke dashboard kok. Tinggal buka dashboard-nya dan login pake akun Google yang sama ya 👍',
+      reply: user.google_email
+        ? `Akun kamu udah kesambung ke dashboard kok: ${user.google_email}. Tinggal buka dashboard-nya dan login pake akun Google yang sama ya 👍`
+        : 'Akun kamu udah kesambung ke dashboard kok 👍 Tinggal buka dashboard-nya. ' +
+          'Emailnya belum kebaca dari sini - cek bagian Settings - Profile di ' +
+          'dashboard ya.',
       newState: STATES.IDLE,
       newStateContext: {},
     };
