@@ -140,6 +140,34 @@ const TRANSACTION_UNDO_KEYWORDS = ['batalin', 'batalkan', 'balikin', 'kembalikan
 const TRANSACTION_UNDO_CONTEXT = /transaksi|hapus|barusan|terakhir|yang tadi/;
 const DELETE_KEYWORDS = ['hapus', 'delete', 'buang'];
 const EDIT_KEYWORDS = ['ubah', 'edit', 'rubah'];
+
+/**
+ * P4 (audit TX-11 / SPEC 2.4): a correction spoken with NO anchor in the
+ * conversation - "eh salah, yang tadi 15rb bukan 25rb" with no pending
+ * context - is ambiguous about WHICH row it means, so the spec answer is to
+ * ASK, never to invent a "tadi" transaction. Deliberately deterministic and
+ * narrow so real records keep their path:
+ *   - "eh salah," / "salah," (explicit opener + separator), or
+ *   - "yang tadi ... bukan ..." (names the previous row);
+ *   - "salah kirim 500rb" (a genuine cost being recorded) matches NEITHER.
+ */
+const CORRECTION_NO_ANCHOR_PATTERN =
+  /\beh\s+salah\s*[,!.]|\beh\s+salah$|\bsalah\s*[,!.]|\byang\s+tadi\b[^.?!]*\bbukan\b|\bbukan\b[^.?!]*\byang\s+tadi\b/;
+/**
+ * P4 (audit DT-10 / SPEC 2.4): a BARE anaphora - the whole message is just
+ * "yang tadi" / "tadi" / "yang sebelumnya" (plus optional particles) - names
+ * no referent the router can resolve deterministically from IDLE, and the
+ * narrowing parsers in handleIdle already had their chance before the router
+ * runs. The live classifier samples ~50/50 between clarifying and dumping the
+ * recent list on exactly this input (probed directly: 3x rawText -> transaction
+ * search, unclear, unclear), so the answer must come from a RULE, not a model
+ * sample: ASK. Deliberately whole-message-tight - a message that carries its
+ * own anchor ("eh salah, yang tadi 15rb bukan 25rb") or a scoped follow-up
+ * ("yang tadi transfer ada nggak?") contains more than the anaphora and keeps
+ * its designed path.
+ */
+const BARE_ANAPHORA_PATTERN =
+  /^\s*(?:yang\s+)?(?:tadi|sebelumnya)(?:\s+(?:aja|dong|donk|nih))?\s*[?.!]*\s*$/i;
 const SEARCH_KEYWORDS = ['cari', 'nyari', 'search'];
 // Makes "ganti ..." an edit request. "ganti" ALONE is not enough on purpose:
 // "ganti oli 200rb" is a new transaction, not an edit of an existing one.
@@ -862,6 +890,15 @@ function isPeriodScopedRecap(lower) {
  *      transfer still behind dashboard_link and ahead of the transaction
  *      gate ("pagi, pindah 500rb dari BRI ke Mandiri" is a transfer).
  */
+/**
+ * "gue mau ganti nomor wa" / "ubah nomer telepon dong" - a change verb
+ * IMMEDIATELY followed by nomor/nomer (audit WB-08 -> product_question, PK 8).
+ * nomor/nomer only: "nominal", "nama", "jumlah" can never satisfy the second
+ * token, and the verb set never covers plain reads ("lihat nomor ...").
+ */
+const ACCOUNT_NUMBER_CHANGE_PATTERN =
+  /\b(?:ganti|ubah|pindah(?:in|kan)?|tukar|tuker|gonta[-\s]?ganti)\s+(?:nomor|nomer)\b/;
+
 export function detectIntent(rawText) {
   const lower = rawText.toLowerCase().trim();
 
@@ -888,6 +925,16 @@ export function detectIntent(rawText) {
     LINK_WORD_PATTERN.test(lower) &&
     FEATURE_DOMAIN_PATTERN.test(lower);
   if (webFeatureQuestion) return 'product_question';
+
+  // P4 (audit WB-08): changing the connected WhatsApp number is product
+  // knowledge (PK 8: "Ganti nomor WhatsApp yang sudah tersambung" - belum
+  // tersedia), in ANY phrasing. The statement form ("gue mau ganti nomor wa")
+  // matched no read/write/knowledge slot and fell through to 'unclear', so
+  // the honest answer never arrived. The change verb must sit directly before
+  // nomor|nomer: "ganti nama dompet", "ubah budget" and "nominal" never match,
+  // so every existing write path keeps its route; no slot owns "nomor" anyway
+  // (the product has no phone-number concept), so nothing here is stolen.
+  if (ACCOUNT_NUMBER_CHANGE_PATTERN.test(lower)) return 'product_question';
 
   // Priority 4: reads/list/status answer with backend facts. Safe reads are
   // never gated - except when the user is asking HOW to do it (then the
@@ -1003,11 +1050,18 @@ export function parseAmount(text) {
  *   - ISO as typed:        "2026-12-31"
  *   - Day + Indonesian month name + year: "31 Desember 2026" / "31 Des 2026"
  *   - Day/Month/Year or Day-Month-Year (Indonesian DD/MM order): "31/12/2026", "31-12-2026"
+ *   - A bare month name, with or without a year: "desember" / "Des 2026"
+ *     (audit MT-07) - resolves to the LAST day of that month (WIB); a bare
+ *     month whose end already passed this year rolls to next year, so the
+ *     answer is never in the past.
  * Not supported (out of scope - would need real date-understanding
  * design, not a quick parser addition): relative phrases like "bulan
  * depan" / "minggu depan" / "besok".
+ *
+ * `now` exists for deterministic tests (month-only needs today's date in
+ * WIB); production callers use the default real clock.
  */
-export function parseIndonesianDate(text) {
+export function parseIndonesianDate(text, now = new Date()) {
   const trimmed = text.trim();
 
   const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -1040,7 +1094,38 @@ export function parseIndonesianDate(text) {
       : null;
   }
 
+  // P4 (audit MT-07): a bare month ("desember") or month + year
+  // ("desember 2026") is a real answer to "targetnya kapan?" - it means
+  // "by the end of that month". Rolls a bare month to next year when this
+  // year's end already passed (WIB); unknown words ("besok", "bulan depan")
+  // still fall through to null, so relative phrases stay unsupported.
+  const monthOnlyMatch = trimmed.toLowerCase().match(/^([a-z]+)(?:\s+(20\d{2}))?$/);
+  if (monthOnlyMatch) {
+    const month = INDONESIAN_MONTHS[monthOnlyMatch[1]];
+    if (!month) return null;
+    const year = monthOnlyMatch[2] ? Number(monthOnlyMatch[2]) : defaultYearForMonth(month, now);
+    return `${year}-${String(month).padStart(2, '0')}-${String(lastDayOfMonth(year, month)).padStart(2, '0')}`;
+  }
+
   return null;
+}
+
+/** Last calendar day of (year, month-1) - month is the 1-based INDONESIAN_MONTHS value. */
+function lastDayOfMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/**
+ * Which year a bare month means: this year when its end is still ahead of
+ * us (WIB), next year when it already passed - the deadline is never past.
+ */
+function defaultYearForMonth(month, now) {
+  const todayIso = new Date(now.getTime() + WIB_OFFSET_MS).toISOString().slice(0, 10);
+  const thisYear = Number(todayIso.slice(0, 4));
+  const endOfYearMonth = `${thisYear}-${String(month).padStart(2, '0')}-${String(
+    lastDayOfMonth(thisYear, month),
+  ).padStart(2, '0')}`;
+  return endOfYearMonth >= todayIso ? thisYear : thisYear + 1;
 }
 
 /** Pure. Rejects things like "31 Februari" that regex alone can't catch. */
@@ -1649,6 +1734,17 @@ async function resolveIntent(rawText, trace) {
     return ruleBasedIntent;
   }
 
+  // P4 (audit DT-10 / SPEC 2.4): the rules say "unclear" AND the message is
+  // a bare anaphora - stop BEFORE the classifier. Sampling the model here is
+  // nondeterministic (~50/50 clarify vs "Ketemu 5 transaksi" - a dump with no
+  // pending window), so the deterministic rule wins: return unclear, which
+  // handleIdle dispatches to the same clarification the baseline gave on its
+  // lucky sample. No AI call, no write, same IDLE state.
+  if (BARE_ANAPHORA_PATTERN.test(rawText)) {
+    trace.intentOverride = 'bare_anaphora_clarify';
+    return 'unclear';
+  }
+
   trace.intentSource = 'classifier_fallback';
   const classifiedIntent = await aiProvider.classifyIntent(rawText);
   trace.classifiedIntent = classifiedIntent;
@@ -1945,7 +2041,70 @@ async function runRecap(user, recapPeriod, filter, trace) {
   };
 }
 
+// P4 (audit RC-14): a comparison ask - a compare word AND an explicit
+// previous-MONTH reference, in either order. Deliberately month-scoped:
+// "dibanding minggu lalu" keeps its normal scoped path instead of being
+// answered with month facts.
+const COMPARISON_REQUEST_PATTERN =
+  /\b(?:dibanding(?:kan|in)?|vs|versus)\b[\s\S]*\bbulan\s+(?:lalu|sebelumnya|kemarin)\b|\bbulan\s+(?:lalu|sebelumnya|kemarin)\b[\s\S]*?\b(?:dibanding(?:kan|in)?|vs|versus)\b/;
+
+/**
+ * The comparison answer: current month vs previous month with the trend,
+ * every number from the backend insight packet (SPEC 1.8 - the model never
+ * calculates). Static like the other structured read cards (goal/wallet/
+ * budget): deterministic, zero writes.
+ */
+async function runMonthComparison(user, trace) {
+  const currentPeriod = parseRecapPeriod('bulan ini', new Date());
+  const facts = await buildRecapFacts(user, currentPeriod, null, trace);
+  const month = facts.insight?.month ?? null;
+  if (!month) {
+    // Insight degraded (Sprint E rule): answer with the scoped current-month
+    // recap instead of inventing a comparison.
+    trace.recapMode = 'comparison_degraded';
+    return runRecap(user, currentPeriod, null, trace);
+  }
+  trace.recapMode = 'month_comparison';
+  return {
+    reply: buildMonthComparisonReply(month),
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+function buildMonthComparisonReply(month) {
+  const lines = [
+    '*Perbandingan pengeluaran*',
+    `- ${month.label}: ${formatRupiah(month.expense)}`,
+    `- ${month.previousLabel}: ${formatRupiah(month.previousExpense)}`,
+  ];
+  const current = Number(month.expense) || 0;
+  const previous = Number(month.previousExpense) || 0;
+  if (previous > 0 && Number.isFinite(month.expenseTrendPercent)) {
+    const pct = Math.abs(Math.round(month.expenseTrendPercent));
+    if (month.expenseTrendDirection === 'down') lines.push(`- Turun ${pct}% dibanding bulan lalu 📉`);
+    else if (month.expenseTrendDirection === 'up') lines.push(`- Naik ${pct}% dibanding bulan lalu 📈`);
+    else lines.push('- Sama persis dengan bulan lalu');
+  } else if (current > 0) {
+    lines.push('- Bulan lalu belum ada pengeluaran nih, jadi belum bisa dibandingin');
+  } else if (previous > 0) {
+    lines.push('- Bulan ini belum ada pengeluaran 📉');
+  } else {
+    lines.push('- Dua bulannya belum ada pengeluaran');
+  }
+  return lines.join('\n');
+}
+
 async function handleRecapIntent(user, rawText, trace) {
+  // P4 (audit RC-14): a month-over-month COMPARISON ask ("pengeluaran
+  // dibanding bulan lalu gimana") is not a scoped recap - it wants THIS
+  // month against the previous one, with the trend. parseRecapPeriod would
+  // otherwise pin it to "bulan lalu" (one month only) and the comparison
+  // the user asked for never happens.
+  if (COMPARISON_REQUEST_PATTERN.test(String(rawText ?? '').toLowerCase())) {
+    return runMonthComparison(user, trace);
+  }
+
   const recapPeriod = parseRecapPeriod(rawText, new Date());
   trace.recapPeriod = recapPeriod;
 
@@ -2418,6 +2577,14 @@ const GOAL_DELETE_CANCEL_REPLY = 'Oke, nggak jadi dihapus 👍';
 const GOAL_RENAME_CANCEL_REPLY = 'Oke, nggak jadi diganti 👍';
 const GOAL_INVALID_TITLE_REPLY = 'Judul goal-nya belum kepakai nih 🙏 Coba sebutin lagi ya.';
 
+// States whose collected input survives a conversational aside (see
+// handleGreetingIntent): only data-entry, never a confirm/destructive stage.
+const GOAL_ENTRY_STATES = new Set([
+  STATES.AWAITING_GOAL_TARGET,
+  STATES.AWAITING_GOAL_DEADLINE,
+  STATES.AWAITING_GOAL_TITLE,
+]);
+
 /** { saved, target, percent } from a goal row - every number from the DB. */
 function goalProgress(goal) {
   const saved = Number(goal.current_saved) || 0;
@@ -2426,24 +2593,51 @@ function goalProgress(goal) {
   return { saved, target, percent };
 }
 
-/** One line per goal, backend numbers only (title, progress, deadline). */
-function goalStatusLine(goal) {
+/** One line per goal, backend numbers only (title, progress, sisa, deadline). */
+function goalStatusLine(goal, prediction) {
   const { saved, target, percent } = goalProgress(goal);
-  let line = `- ${goal.title}: ${formatRupiah(saved)} / ${formatRupiah(target)} (${percent}%)`;
+  // sisa comes from the insight row when the read could compute one
+  // (SPEC 2.9/PK 6: backend-computed remaining), else the plain arithmetic
+  // on the row's own columns - never a model number.
+  const remaining =
+    prediction && Number.isFinite(prediction.remaining)
+      ? prediction.remaining
+      : Math.max(0, target - saved);
+  let line = `- ${goal.title}: ${formatRupiah(saved)} / ${formatRupiah(target)} (${percent}%) · sisa ${formatRupiah(remaining)}`;
   if (goal.deadline) line += ` · batas ${goal.deadline}`;
   if (goal.status !== 'achieved') {
-    const monthly = goalsDomain.computeRequiredMonthlySaving(goal.target_amount, goal.deadline);
+    // Remaining-based requirement when the insight row is available (what is
+    // still NEEDED); the deadline formula stays as the degraded-read fallback
+    // and is exactly what the creation confirmation prints.
+    const monthly =
+      prediction && goal.deadline && Number.isFinite(prediction.requiredPerMonth)
+        ? prediction.requiredPerMonth
+        : goalsDomain.computeRequiredMonthlySaving(goal.target_amount, goal.deadline);
     if (Number.isFinite(monthly)) line += `\n  · per bulan ${formatRupiah(monthly)}`;
+    if (prediction && prediction.projectedDate) {
+      line += `\n  · proyeksi selesai ${formatGoalDate(prediction.projectedDate)}`;
+    }
   }
   return line;
 }
 
+const GOAL_DATE_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+/** '2026-12-23' -> '23 Des 2026' - date-only ISO, split (never Date-parsed, no TZ drift). */
+function formatGoalDate(iso) {
+  const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number);
+  if (!y || !m || !d) return String(iso);
+  return `${d} ${GOAL_DATE_MONTHS[m - 1]} ${y}`;
+}
+
 /** Read path: honest list/status - no persona call, nothing written. */
-function buildGoalStatusReply(goals) {
+function buildGoalStatusReply(goals, predictionsById) {
   if (!goals || goals.length === 0) return GOAL_LIST_NONE_REPLY;
   const shown = goals.slice(0, 5);
   const more = goals.length > shown.length ? `\n\nMasih ${goals.length - shown.length} lagi ya.` : '';
-  return `🎯 *Goal kamu*\n\n${shown.map(goalStatusLine).join('\n')}${more}`;
+  return `🎯 *Goal kamu*\n\n${shown
+    .map((goal) => goalStatusLine(goal, predictionsById?.get(goal.id)))
+    .join('\n')}${more}`;
 }
 
 function buildGoalListLines(goals) {
@@ -2454,6 +2648,55 @@ function matchGoalsByName(goals, name) {
   if (!name) return goals;
   const needle = String(name).toLowerCase();
   return goals.filter((goal) => String(goal.title ?? '').toLowerCase().includes(needle));
+}
+
+// Tokens dropped before a narrowing payload is matched against goal titles
+// ("yang lazy aja" -> "lazy"), so filler never decides the match.
+const GOAL_NARROW_STOPWORDS = new Set([
+  'yang', 'yg', 'goal', 'buat', 'untuk', 'gue', 'gua', 'gw', 'saya', 'aku',
+  'ini', 'itu', 'aja', 'saja', 'doang', 'dong', 'nih', 'deh', 'sih',
+]);
+
+/**
+ * Pure. Resolves a narrowing payload ("lazy", "buat laptop") to the goals it
+ * names - whole payload first (the usual case), then any single token, so a
+ * phrase still narrows instead of silently falling back to the full list.
+ * Empty result means "matched nothing": the caller answers with the honest
+ * full list / not-found wording, never with an invented goal.
+ */
+function matchGoalsByNarrowing(goals, payload) {
+  const direct = matchGoalsByName(goals, payload);
+  if (direct.length > 0) return direct;
+  const tokens = String(payload ?? '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 3 && !GOAL_NARROW_STOPWORDS.has(token));
+  const byToken = [];
+  for (const token of tokens) {
+    for (const goal of matchGoalsByName(goals, token)) {
+      if (!byToken.includes(goal)) byToken.push(goal);
+    }
+  }
+  return byToken;
+}
+
+/**
+ * Read-path facts for the goal card: the SAME computeGoalPredictions() rows
+ * the insight packet uses (SPEC 2.9 / PK 6 - backend-computed). Returns a Map
+ * keyed by goal id; any read failure degrades to an EMPTY map so the card
+ * still renders with its static fields (a degraded fact never breaks a reply).
+ * Read-only: one select on this user's own transactions.
+ */
+async function loadGoalPredictions(user, goals, trace) {
+  if (!goals || goals.length === 0) return new Map();
+  try {
+    const rows = await transactionQueries.listTransactions(user.id);
+    const predictions = insightsDomain.computeGoalPredictions(goals, rows);
+    return new Map(predictions.map((prediction) => [prediction.id, prediction]));
+  } catch (err) {
+    trace.goalFactsError = err.message;
+    return new Map();
+  }
 }
 
 /**
@@ -2501,7 +2744,37 @@ async function handleGoalManageIntent(user, rawText, trace) {
 
   if (!parsed) {
     trace.goalOutcome = 'read';
-    return { reply: buildGoalStatusReply(goals), newState: STATES.IDLE, newStateContext: {} };
+    // Facts first (read-only): the card's sisa / per bulan / proyeksi come
+    // from computeGoalPredictions, the same rows the insight packet uses.
+    const predictions = await loadGoalPredictions(user, goals, trace);
+    // P4 (MT-03): a narrowing follow-up ("yang lazy aja") shows ONLY the
+    // goals it names - the same narrowing grammar the recaps use, whose
+    // built-in refusals (amounts, write/edit/manage/read requests) keep
+    // every write path out of this read.
+    const narrowing = goals.length > 0 ? parseRecapNarrowing(rawText) : null;
+    if (narrowing) {
+      const narrowed = matchGoalsByNarrowing(goals, narrowing.payload);
+      if (narrowed.length > 0) {
+        trace.goalNarrowing = narrowing.payload;
+        return {
+          reply: buildGoalStatusReply(narrowed, predictions),
+          newState: STATES.IDLE,
+          newStateContext: {},
+        };
+      }
+      // Payload matched nothing: say so and show the real list - never guess.
+      trace.goalNarrowing = 'unresolved';
+      return {
+        reply: `${GOAL_NOT_FOUND_PREFIX}${buildGoalListLines(goals)}`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+    return {
+      reply: buildGoalStatusReply(goals, predictions),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
   }
   trace.goalAction = parsed.action;
 
@@ -2930,6 +3203,16 @@ async function handleDashboardLinkIntent(user, rawText, trace) {
 }
 
 async function handleGreetingIntent(user, rawText, trace) {
+  // P4 (MT-19): an aside ("halo") in the middle of goal data-entry must NOT
+  // silently drop what we already collected - otherwise the next answer
+  // ("5jt") is answered by the router as a fresh transaction. Only the three
+  // NON-destructive goal states are preserved; every confirm/destructive
+  // state still resets here, so a stale "ya" can never execute a pending
+  // delete/rename after a greeting.
+  const keepGoalEntry = GOAL_ENTRY_STATES.has(user.state);
+  const newState = keepGoalEntry ? user.state : STATES.IDLE;
+  const newStateContext = keepGoalEntry ? user.state_context || {} : {};
+
   // P2-C: first contact (onboarding incomplete) opens with the one-time
   // introduction instead of the small-talk greeting; every later greeting
   // - and every user who has ever recorded anything - keeps the original.
@@ -2937,14 +3220,14 @@ async function handleGreetingIntent(user, rawText, trace) {
     trace.onboarding = true;
     return {
       reply: buildOnboardingReply(),
-      newState: STATES.IDLE,
-      newStateContext: {},
+      newState,
+      newStateContext,
     };
   }
   return {
     reply: pickRandom(GREETING_REPLIES),
-    newState: STATES.IDLE,
-    newStateContext: {},
+    newState,
+    newStateContext,
   };
 }
 
@@ -3013,6 +3296,21 @@ async function handleTransactionIntent(user, rawText, trace) {
     if (lastTransaction && lastTransaction.deleted_at) {
       lastTransaction = null;
     }
+  }
+
+  // P4 (audit TX-11 / SPEC 2.4): a correction with NOTHING to correct against
+  // is ambiguous - ask WHICH transaction (the edit flow's own target pick),
+  // before any extraction call. The extraction path would instead have asked
+  // "uang masuk atau uang keluar?" and invited saving a fabricated row.
+  // Anchored corrections (pending context + live row) skip this entirely -
+  // the Sprint C correction branch below keeps owning them (audit MT-11).
+  if (!lastTransaction && CORRECTION_NO_ANCHOR_PATTERN.test(String(rawText ?? '').toLowerCase().trim())) {
+    trace.editOutcome = 'correction_without_anchor';
+    return {
+      reply: EDIT_ASK_TARGET_REPLY,
+      newState: STATES.AWAITING_EDIT_UPDATE,
+      newStateContext: {},
+    };
   }
 
   // Sprint D1: pass the user's active category list (defaults + custom)
@@ -5051,6 +5349,45 @@ async function runBudgetCreate(user, parsed, trace) {
   if (result.status === 'category_not_found') {
     // Same stance as createBudget: the target must already exist in the
     // caller's active list - a budget never fabricates a category.
+
+    // P4 (audit BD-07): a category-wide budget with EXACTLY this name that
+    // already exists (e.g. its category row was archived later) answers the
+    // PK-12 duplicate rule truthfully - "already exists, update instead" -
+    // never "category not found", which hides a budget the user can SEE in
+    // their dashboard. Reachable states are untouched: a budget whose
+    // category is still active passes the domain's exact-match check above
+    // and its own duplicate check (budgets.js) before this branch is ever
+    // reached. Category-wide scope only - chat budgets carry no wallet.
+    const budgets = await budgetsDomain.listBudgets(user.id);
+    const duplicateByName = budgets.find(
+      (row) =>
+        row.wallet_id == null &&
+        String(row.category).trim().toLowerCase() === String(parsed.name).trim().toLowerCase(),
+    );
+    if (duplicateByName) {
+      trace.budgetOutcome = 'duplicate';
+      return {
+        reply: `Udah ada budget buat "${parsed.name}" nih. Ubah nominalnya aja ya.`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
+
+    // P4 (audit BD-02 / PK 12): the closest ACTIVE category turns the dead
+    // end into an ASK ("Maksudnya ...?") - a suggestion the user confirms
+    // themselves. No write is guessed for them; with no similar name the
+    // plain refusal above stays byte-for-byte (PK 12 L187 still owns the
+    // stance).
+    const suggestion = matchCategoryName(parsed.name, await getActiveCategoryNames(user.id));
+    if (suggestion) {
+      return {
+        reply:
+          `${CATEGORY_NOT_FOUND_REPLY} Maksudnya "${suggestion}"? Kalau iya, ` +
+          `ketik "tambah budget ${suggestion} ${parsed.amountText}" ya.`,
+        newState: STATES.IDLE,
+        newStateContext: {},
+      };
+    }
     return { reply: CATEGORY_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
   // wallet_not_found / wallet_archived are unreachable here (chat never
@@ -5551,6 +5888,15 @@ async function handleAwaitingDeleteConfirmation(user, rawText, trace) {
   }
 
   // awaiting target
+  // P4 (MT-21): "batal" while picking a candidate CANCELS the whole delete -
+  // the same stance the confirm phase above already has. Without this it
+  // fell through to target resolution, re-asked forever, and left the user
+  // stuck in AWAITING_DELETE_CONFIRMATION. Whole-message confirmation match
+  // (parseConfirmationReply) keeps real candidates ("2", "yang 25rb") intact.
+  if (parseConfirmationReply(rawText) === 'no') {
+    trace.deleteOutcome = 'cancelled';
+    return { reply: DELETE_CANCEL_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
   if (shouldHandBackToRouter(rawText, 'transaction_delete')) {
     return handleIdle(user, rawText, trace);
   }

@@ -194,4 +194,30 @@ describe('parseIndonesianDate (pure, no LLM call) - Sprint B intent audit fix', 
     assert.equal(parseIndonesianDate('bulan depan'), null);
     assert.equal(parseIndonesianDate('besok'), null);
   });
+
+  test('P4 (MT-07): a bare month resolves to the LAST day of that month (WIB)', () => {
+    const now = new Date('2026-10-05T03:00:00Z'); // 2026-10-05 WIB
+    assert.equal(parseIndonesianDate('desember', now), '2026-12-31');
+    assert.equal(parseIndonesianDate('Desember', now), '2026-12-31');
+    assert.equal(parseIndonesianDate('des', now), '2026-12-31');
+    assert.equal(parseIndonesianDate('desember 2027', now), '2027-12-31');
+    // a month whose end already passed this year rolls to NEXT year -
+    // the deadline is never in the past
+    assert.equal(parseIndonesianDate('januari', now), '2027-01-31');
+    // ...but an explicit year is honored as typed
+    assert.equal(parseIndonesianDate('januari 2026', now), '2026-01-31');
+    // 28/30-day months
+    assert.equal(parseIndonesianDate('februari', new Date('2027-01-05T03:00:00Z')), '2027-02-28');
+    assert.equal(parseIndonesianDate('april', now), '2027-04-30');
+    // month-only form does not disturb the full-date branches above
+    assert.equal(parseIndonesianDate('31 Desember 2026'), '2026-12-31');
+  });
+
+  test('P4 (MT-07): non-month words in month position still return null', () => {
+    const now = new Date('2026-10-05T03:00:00Z');
+    assert.equal(parseIndonesianDate('besok', now), null);
+    assert.equal(parseIndonesianDate('bulan depan', now), null);
+    assert.equal(parseIndonesianDate('nggak', now), null);
+    assert.equal(parseIndonesianDate('2026', now), null);
+  });
 });

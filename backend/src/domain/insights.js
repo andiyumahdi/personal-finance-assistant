@@ -209,6 +209,9 @@ export function computeGoalPredictions(goals, transactions, now = new Date()) {
     }
 
     return {
+      // id: lets a caller (the chat goal card) key a row back to its goal
+      // without relying on title uniqueness - the numbers stay the same.
+      id: goal.id,
       title: goal.title,
       targetAmount: target,
       currentSaved: saved,
