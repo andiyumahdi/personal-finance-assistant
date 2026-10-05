@@ -234,7 +234,7 @@ describe('classifier enum <-> handler map sync (D3 mandate)', () => {
   });
 });
 
-describe('Sprint D3 state machine (8 -> 9, Phase 2 -> 11)', () => {
+describe('Sprint D3 state machine (8 -> 9, Phase 2 -> 11, Phase 6 GL-7 -> 13)', () => {
   test('AWAITING_BUDGET_CONFIRM exists; every earlier state intact and ordered', () => {
     assert.equal(STATES.AWAITING_BUDGET_CONFIRM, 'AWAITING_BUDGET_CONFIRM');
     assert.deepEqual(Object.keys(STATES), [
@@ -243,6 +243,8 @@ describe('Sprint D3 state machine (8 -> 9, Phase 2 -> 11)', () => {
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
       'AWAITING_GOAL_TITLE',
+      'AWAITING_GOAL_MONTHLY_TITLE',
+      'AWAITING_GOAL_MONTHLY_DEADLINE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',

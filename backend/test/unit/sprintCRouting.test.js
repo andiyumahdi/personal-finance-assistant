@@ -155,20 +155,23 @@ describe('classifier enum <-> handler map sync (Sprint C mandate)', () => {
 });
 
 describe('Sprint C states exist alongside the existing ones', () => {
-  test('STATES keeps pre-Sprint-C states; C added two, D1/D2/D3 one each, Phase 2 two', () => {
+  test('STATES keeps pre-Sprint-C states; C added two, D1/D2/D3 one each, Phase 2 two, Phase 6 GL-7 two', () => {
     // Lock updated in Sprint D1 (AWAITING_CATEGORY_CONFIRM), D2
     // (AWAITING_WALLET_CONFIRM) and D3 (AWAITING_BUDGET_CONFIRM) - the
     // state list, classifier enum, and handler map must always move
     // together. Phase 2 added AWAITING_GOAL_TITLE (fallback when the goal
     // request carried no title) and AWAITING_GOAL_CONFIRM (goal
     // rename/delete confirmation), both directly after the goal states
-    // they belong to.
+    // they belong to. Phase 6 (GL-7) added AWAITING_GOAL_MONTHLY_TITLE and
+    // AWAITING_GOAL_MONTHLY_DEADLINE for the monthly-given goal flow.
     assert.deepEqual(Object.keys(STATES), [
       'IDLE',
       'AWAITING_DIRECTION',
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
       'AWAITING_GOAL_TITLE',
+      'AWAITING_GOAL_MONTHLY_TITLE',
+      'AWAITING_GOAL_MONTHLY_DEADLINE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',

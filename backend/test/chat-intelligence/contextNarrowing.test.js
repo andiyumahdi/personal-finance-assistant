@@ -386,12 +386,13 @@ describe('P2-B: the search on screen answers its own follow-ups (tests 1-6)', ()
     assert.equal(trace.budgetOutcome, 'read');
     const makanSpent = monthExpenseByCategory('Makanan & Minuman');
     const transportSpent = monthExpenseByCategory('Transport');
+    // B-1: two-line format with emoji
     assert.ok(
-      trace.reply.includes(`- Makanan & Minuman: ${formatRupiah(makanSpent)} / Rp500.000`),
+      trace.reply.includes(`🍜 Makanan & Minuman — ${formatRupiah(makanSpent)} / Rp500.000`),
       trace.reply,
     );
     assert.ok(
-      trace.reply.includes(`- Transport: ${formatRupiah(transportSpent)} / Rp100.000`),
+      trace.reply.includes(`🚌 Transport — ${formatRupiah(transportSpent)} / Rp100.000`),
       trace.reply,
     );
     assert.doesNotMatch(trace.reply, /Ketemu|paling gede/, 'never a transaction-search answer');
@@ -406,7 +407,7 @@ describe('P2-B: the search on screen answers its own follow-ups (tests 1-6)', ()
 });
 
 describe('P2-B: the budget list on screen answers its own follow-ups (tests 7-11)', () => {
-  test('7. "yang makan doang" narrows to the named category', async () => {
+  test('7. "yang makan doang" narrows to the named category (B-1)', async () => {
     const base = await send(PHONE_A, 'budget gue apa aja?');
     assert.equal(base.intent, 'budget_manage');
 
@@ -415,11 +416,12 @@ describe('P2-B: the budget list on screen answers its own follow-ups (tests 7-11
     assert.equal(trace.intent, 'budget_narrowing');
     assert.equal(trace.budgetNarrowing.kind, 'category');
     const makanSpent = monthExpenseByCategory('Makanan & Minuman');
+    // B-1: two-line format with emoji
     assert.ok(
-      trace.reply.includes(`- Makanan & Minuman: ${formatRupiah(makanSpent)} / Rp500.000`),
+      trace.reply.includes(`🍜 Makanan & Minuman — ${formatRupiah(makanSpent)} / Rp500.000`),
       trace.reply,
     );
-    assert.doesNotMatch(trace.reply, /^- Transport:/m, 'the other budget is narrowed out');
+    assert.doesNotMatch(trace.reply, /Transport/, 'the other budget is narrowed out');
     assert.equal(trace.budgetFacts.length, 1, 'one backend fact for the one shown budget');
     assert.equal(trace.budgetFacts[0].category, 'Makanan & Minuman');
 
@@ -430,7 +432,7 @@ describe('P2-B: the budget list on screen answers its own follow-ups (tests 7-11
     assert.deepEqual(writesTo(...READ_TABLES), []);
   });
 
-  test('8. "yang lewat budget aja" narrows to the over-budget rows only', async () => {
+  test('8. "yang lewat budget aja" narrows to the over-budget rows only (B-2)', async () => {
     await send(PHONE_A, 'budget gue apa aja?');
     const transportSpent = monthExpenseByCategory('Transport');
     assert.ok(transportSpent > 100_000, 'the fixture transport budget is always over target');
@@ -439,11 +441,12 @@ describe('P2-B: the budget list on screen answers its own follow-ups (tests 7-11
 
     assert.equal(trace.intent, 'budget_narrowing');
     assert.equal(trace.budgetNarrowing.kind, 'status_over');
+    // B-2: over-budget format with category emoji
     assert.ok(
-      trace.reply.includes(`- Transport: ${formatRupiah(transportSpent)} / Rp100.000`),
+      trace.reply.includes(`🚌 Transport — ${formatRupiah(transportSpent)} / Rp100.000`),
       trace.reply,
     );
-    assert.doesNotMatch(trace.reply, /Makanan & Minuman:/, 'the under-budget row is narrowed out');
+    assert.doesNotMatch(trace.reply, /Makanan & Minuman/, 'the under-budget row is narrowed out');
     assert.equal(trace.budgetFacts.length, 1);
     assert.equal(trace.budgetFacts[0].status, 'over');
 

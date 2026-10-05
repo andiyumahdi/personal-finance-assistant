@@ -102,7 +102,7 @@ describe('classifier enum <-> handler map sync (D1 mandate)', () => {
 });
 
 describe('Sprint D state', () => {
-  test('AWAITING_CATEGORY_CONFIRM exists, earlier states intact (D2/D3 appended their own)', () => {
+  test('AWAITING_CATEGORY_CONFIRM exists, earlier states intact (D2/D3 appended their own, Phase 6 GL-7 appended two)', () => {
     assert.equal(STATES.AWAITING_CATEGORY_CONFIRM, 'AWAITING_CATEGORY_CONFIRM');
     assert.deepEqual(Object.keys(STATES), [
       'IDLE',
@@ -110,6 +110,8 @@ describe('Sprint D state', () => {
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
       'AWAITING_GOAL_TITLE',
+      'AWAITING_GOAL_MONTHLY_TITLE',
+      'AWAITING_GOAL_MONTHLY_DEADLINE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',

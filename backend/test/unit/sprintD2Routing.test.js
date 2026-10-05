@@ -198,7 +198,7 @@ describe('classifier enum <-> handler map sync (D2 mandate)', () => {
   });
 });
 
-describe('Sprint D2 state machine (7 -> 8, D3 -> 9, Phase 2 -> 11)', () => {
+describe('Sprint D2 state machine (7 -> 8, D3 -> 9, Phase 2 -> 11, Phase 6 GL-7 -> 13)', () => {
   test('AWAITING_WALLET_CONFIRM exists; every earlier state intact and ordered', () => {
     assert.equal(STATES.AWAITING_WALLET_CONFIRM, 'AWAITING_WALLET_CONFIRM');
     assert.deepEqual(Object.keys(STATES), [
@@ -207,6 +207,8 @@ describe('Sprint D2 state machine (7 -> 8, D3 -> 9, Phase 2 -> 11)', () => {
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
       'AWAITING_GOAL_TITLE',
+      'AWAITING_GOAL_MONTHLY_TITLE',
+      'AWAITING_GOAL_MONTHLY_DEADLINE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',

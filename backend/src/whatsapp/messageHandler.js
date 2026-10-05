@@ -48,6 +48,10 @@ export const STATES = {
   // derived from the request ("mau nabung" with no object) - the flow asks
   // for it instead of writing a hardcoded placeholder title.
   AWAITING_GOAL_TITLE: 'AWAITING_GOAL_TITLE',
+  // GL-7: monthly-given goal flow ("nabung 2jt per bulan") - carries the
+  // monthly amount through title/deadline collection, then computes target.
+  AWAITING_GOAL_MONTHLY_TITLE: 'AWAITING_GOAL_MONTHLY_TITLE',
+  AWAITING_GOAL_MONTHLY_DEADLINE: 'AWAITING_GOAL_MONTHLY_DEADLINE',
   // Sprint C (Transaction Management): the two new states follow the same
   // AWAITING_* pattern as the existing ones (docs/SPECIFICATION.md 12.1) -
   // no parallel mechanism.
@@ -84,6 +88,9 @@ export const STATES = {
 
 const RECAP_KEYWORDS = ['habis berapa', 'rekap', 'pengeluaran', 'boros', 'kondisi keuangan'];
 const GOAL_KEYWORDS = ['mau nabung', 'nabung buat', 'bikin goal', 'target nabung'];
+
+/** GL-7: "nabung X per bulan" monthly-given goal flow pattern. */
+const GOAL_MONTHLY_PATTERN = /nabung\s+(\d+(?:[.,]\d+)?)\s*(?:rb|jt|ribu|juta)?\s*(?:\/\s*bulan|per\s+bulan|per\s+bln)/i;
 const DASHBOARD_LINK_KEYWORDS = ['dashboard', 'login'];
 const HELP_KEYWORDS = [
   'bisa apa',
@@ -509,7 +516,7 @@ export function looksLikeTransaction(rawText) {
 // a transaction, and must keep routing exactly as they did before Sprint C.
 
 function isGoalStartRequest(lower) {
-  return GOAL_KEYWORDS.some((kw) => lower.includes(kw));
+  return GOAL_KEYWORDS.some((kw) => lower.includes(kw)) || GOAL_MONTHLY_PATTERN.test(lower);
 }
 
 function isExcludedFromSprintC(lower) {
@@ -1996,6 +2003,20 @@ const SHORT_MONTHS = [
   'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des',
 ];
 
+/** B-1: emoji prefix per default category for the budget card. */
+const CATEGORY_EMOJI = {
+  'Makanan & Minuman': '🍜',
+  Transport: '🚌',
+  Belanja: '🛍️',
+  Tagihan: '🧾',
+  Hiburan: '🎮',
+  Kesehatan: '🏥',
+  Pendidikan: '📚',
+  Gaji: '💼',
+  Transfer: '🔄',
+  Lainnya: '📦',
+};
+
 export function formatRupiah(amount) {
   const value = Math.round(Number(amount) || 0);
   const digits = Math.abs(value).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
@@ -2316,6 +2337,10 @@ async function buildRecapFacts(user, recapPeriod, filter, trace) {
   const rows = applyRecapFilter(await transactionQueries.listTransactions(user.id, window), filter);
   const totals = calculateTotals(rows);
 
+  // R-3: compute transfer total for the "Pindah dompet" line (transfers excluded from income/expense).
+  const transferRows = rows.filter((tx) => tx.type === 'transfer');
+  const transferTotal = transferRows.reduce((sum, tx) => sum + Number(tx.amount), 0);
+
   // The insight packet (month trend / goal predictions / one recommendation)
   // is computed from the WHOLE history and only makes sense for an all-time
   // or current-month report - a single day's recap has no trend. It also
@@ -2355,6 +2380,7 @@ async function buildRecapFacts(user, recapPeriod, filter, trace) {
     filter: filter ? filter.label : null,
     breakdown: buildRecapBreakdown(rows),
     transactions: buildRecapTransactions(rows),
+    transferTotal: transferTotal > 0 ? transferTotal : null,
     budgets,
     insight,
   };
@@ -2364,6 +2390,7 @@ async function buildRecapFacts(user, recapPeriod, filter, trace) {
     filter: filter ? filter.kind : null,
     insight: insight !== null,
     budgets: budgets !== null,
+    transferTotal: transferTotal > 0,
   };
   return facts;
 }
@@ -2373,9 +2400,16 @@ async function buildRecapFacts(user, recapPeriod, filter, trace) {
  * recap never writes anything, so this must NOT become the generic
  * "coba kirim lagi" pipeline error - the user asked a read-only question
  * and the backend numbers are already in hand.
+ * R-1/R-4: mirrors the AI report skeleton (heading → totals → breakdown →
+ * transactions → transfer line → budgets → goals → recommendation) with
+ * progressive disclosure - sections omitted when genuinely empty.
  */
 function buildStaticRecapReply(facts) {
   const heading = facts.period ? `*Rekap ${facts.period.label}*` : '*Rekap keuangan kamu*';
+  if (facts.filter) {
+    // Filtered recap: note the slice in the heading area
+    return `${heading} (${facts.filter})\n\n${buildStaticRecapBody(facts)}`;
+  }
   const bullets = [
     `- Pemasukan: ${formatRupiah(facts.totals.income)}`,
     `- Pengeluaran: ${formatRupiah(facts.totals.expense)}`,
@@ -2387,6 +2421,74 @@ function buildStaticRecapReply(facts) {
     return `${heading}\n\nBelum ada catatan di periode itu ya 🙏`;
   }
   return `${heading}\n\n${bullets.join('\n')}`;
+}
+
+function buildStaticRecapBody(facts) {
+  const bullets = [
+    `- Pemasukan: ${formatRupiah(facts.totals.income)}`,
+    `- Pengeluaran: ${formatRupiah(facts.totals.expense)}`,
+    `- Selisih: ${formatRupiah(facts.totals.balance)}`,
+  ];
+  const top = facts.breakdown[0];
+  if (top) bullets.push(`- Kategori terbesar: ${top.category} (${formatRupiah(top.amount)})`);
+
+  // Key transactions (R-1: "Pengeluaran terbesar" section)
+  if (facts.transactions && facts.transactions.length > 0) {
+    for (const tx of facts.transactions.slice(0, 3)) {
+      bullets.push(`- ${describeTransaction(tx)}`);
+    }
+  }
+
+  // R-3: Transfer line when notable transfer exists
+  if (facts.transferTotal !== null && facts.transferTotal > 0) {
+    bullets.push(`- Pindah dompet: ${formatRupiah(facts.transferTotal)}`);
+  }
+
+  // Budgets (from insight or month-scoped scan)
+  if (facts.budgets && facts.budgets.length > 0) {
+    const over = facts.budgets
+      .filter((b) => b.percent !== null && b.percent !== undefined && Number(b.percent) > 100)
+      .sort((a, b) => Number(b.percent) - Number(a.percent))[0];
+    if (over) {
+      bullets.push(`- Budget ${over.category}: terpakai ${formatRupiah(over.spent)} / ${formatRupiah(over.amount)} (${Math.round(Number(over.percent))}%)`);
+    } else {
+      // Show the most used budget
+      const mostUsed = facts.budgets
+        .filter((b) => b.spent > 0)
+        .sort((a, b) => Number(b.spent) - Number(a.spent))[0];
+      if (mostUsed) {
+        bullets.push(`- Budget ${mostUsed.category}: terpakai ${formatRupiah(mostUsed.spent)} / ${formatRupiah(mostUsed.amount)} (${Math.round(Number(mostUsed.percent))}%)`);
+      }
+    }
+  }
+
+  // Goal progress (from insight predictions)
+  if (facts.insight && facts.insight.goals && facts.insight.goals.length > 0) {
+    for (const goal of facts.insight.goals.slice(0, 2)) {
+      const status = goal.verdict === 'overdue' ? ' (TERLAMBAT)' :
+                     goal.verdict === 'behind' ? ' (tertunda)' :
+                     goal.verdict === 'on_track' ? ' (on track)' : '';
+      bullets.push(`- Goal ${goal.title}: terkumpul ${formatRupiah(goal.currentSaved)} / ${formatRupiah(goal.targetAmount)} · sisa ${formatRupiah(goal.remaining)}${status}`);
+    }
+  }
+
+  // Recommendation (one line if present)
+  if (facts.insight && facts.insight.recommendation) {
+    const rec = facts.insight.recommendation;
+    if (rec.kind === 'budget') {
+      bullets.push(`- ⚠️ Budget ${rec.category} lewat ${formatRupiah(rec.spent - rec.amount)} (${rec.percent}%)`);
+    } else if (rec.kind === 'goal') {
+      if (rec.verdict === 'overdue') {
+        bullets.push(`- ⚠️ Goal ${rec.title} terlewat deadline (${rec.deadline}), sisa ${formatRupiah(rec.remaining)}`);
+      } else if (rec.verdict === 'behind') {
+        bullets.push(`- ⚠️ Goal ${rec.title} butuh ${formatRupiah(rec.requiredPerMonth)}/bulan (${rec.daysLeft} hari lagi)`);
+      }
+    } else if (rec.kind === 'trend') {
+      bullets.push(`- 📈 Pengeluaran naik ${rec.percent}% vs ${rec.previousLabel}`);
+    }
+  }
+
+  return bullets.join('\n');
 }
 
 /** Shared by the recap intent and the narrowing follow-up (Priority 6). */
@@ -2957,6 +3059,8 @@ const GOAL_ENTRY_STATES = new Set([
   STATES.AWAITING_GOAL_TARGET,
   STATES.AWAITING_GOAL_DEADLINE,
   STATES.AWAITING_GOAL_TITLE,
+  STATES.AWAITING_GOAL_MONTHLY_TITLE,
+  STATES.AWAITING_GOAL_MONTHLY_DEADLINE,
 ]);
 
 /** { saved, target, percent } from a goal row - every number from the DB. */
@@ -2967,41 +3071,54 @@ function goalProgress(goal) {
   return { saved, target, percent };
 }
 
-/** One line per goal, backend numbers only (title, progress, sisa, deadline). */
-function goalStatusLine(goal, prediction) {
+/**
+ * Goal status line - backend numbers only (GL-1/GL-2/GL-3/GL-5).
+ * - Achieved: congratulation, no required amounts.
+ * - With deadline: per-hari primary; per-bulan only when days ≥ 30; "dalam N hari" context.
+ * - No deadline: explicit "Belum ada deadline..." message.
+ * - CR-3: NO projected completion date.
+ */
+function goalStatusLine(goal, _prediction) {
   const { saved, target, percent } = goalProgress(goal);
-  // sisa comes from the insight row when the read could compute one
-  // (SPEC 2.9/PK 6: backend-computed remaining), else the plain arithmetic
-  // on the row's own columns - never a model number.
-  const remaining =
-    prediction && Number.isFinite(prediction.remaining)
-      ? prediction.remaining
-      : Math.max(0, target - saved);
-  let line = `- ${goal.title}: ${formatRupiah(saved)} / ${formatRupiah(target)} (${percent}%) · sisa ${formatRupiah(remaining)}`;
-  if (goal.deadline) line += ` · batas ${goal.deadline}`;
-  if (goal.status !== 'achieved') {
-    // Remaining-based requirement when the insight row is available (what is
-    // still NEEDED); the deadline formula stays as the degraded-read fallback
-    // and is exactly what the creation confirmation prints.
-    const monthly =
-      prediction && goal.deadline && Number.isFinite(prediction.requiredPerMonth)
-        ? prediction.requiredPerMonth
-        : goalsDomain.computeRequiredMonthlySaving(goal.target_amount, goal.deadline);
-    if (Number.isFinite(monthly)) line += `\n  · per bulan ${formatRupiah(monthly)}`;
-    if (prediction && prediction.projectedDate) {
-      line += `\n  · proyeksi selesai ${formatGoalDate(prediction.projectedDate)}`;
-    }
+  const remaining = Math.max(0, target - saved);
+
+  // GL-1: achieved goal → congratulation state, no required amounts
+  if (goal.status === 'achieved') {
+    return `🎉 *${goal.title} TERCAPAI!*\nTerkumpul ${formatRupiah(saved)} dari ${formatRupiah(target)} (${percent}%)`;
   }
+
+  let line = `- ${goal.title}: ${formatRupiah(saved)} / ${formatRupiah(target)} (${percent}%) · sisa ${formatRupiah(remaining)}`;
+
+  if (goal.deadline) {
+    line += ` · batas ${goal.deadline}`;
+
+    // Compute days remaining (WIB calendar)
+    const deadlineText = String(goal.deadline).slice(0, 10);
+    const deadlineMs = Date.parse(`${deadlineText}T00:00:00.000Z`);
+    if (!Number.isNaN(deadlineMs)) {
+      const now = new Date();
+      const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
+      const todayWib = Math.floor((now.getTime() + WIB_OFFSET_MS) / 86400000);
+      const deadlineDay = Math.floor(deadlineMs / 86400000);
+      const daysLeft = deadlineDay - todayWib;
+
+      // GL-2: per-hari primary; per-bulan only when days ≥ 30
+      const monthly = goalsDomain.computeRequiredMonthlySaving(goal.target_amount, goal.deadline);
+      if (Number.isFinite(monthly) && daysLeft > 0) {
+        const perDay = Math.ceil(remaining / daysLeft);
+        line += `\n  · per hari ${formatRupiah(perDay)} (dalam ${daysLeft} hari)`;
+        if (daysLeft >= 30) {
+          line += `\n  · per bulan ${formatRupiah(monthly)}`;
+        }
+      }
+    }
+  } else {
+    // GL-3: no deadline → explicit explanation
+    line += `\n  Belum ada deadline, jadi gue belum bisa hitung kebutuhan per hari.`;
+  }
+
+  // GL-5/CR-3: NO projected completion date (removed)
   return line;
-}
-
-const GOAL_DATE_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
-
-/** '2026-12-23' -> '23 Des 2026' - date-only ISO, split (never Date-parsed, no TZ drift). */
-function formatGoalDate(iso) {
-  const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number);
-  if (!y || !m || !d) return String(iso);
-  return `${d} ${GOAL_DATE_MONTHS[m - 1]} ${y}`;
 }
 
 /** Read path: honest list/status - no persona call, nothing written. */
@@ -3329,6 +3446,36 @@ async function handleAwaitingGoalConfirm(user, rawText, trace) {
 }
 
 async function handleGoalStartIntent(user, rawText, trace) {
+  const lower = String(rawText ?? '').toLowerCase();
+  const monthlyMatch = lower.match(GOAL_MONTHLY_PATTERN);
+
+  if (monthlyMatch) {
+    // GL-7: monthly-given flow - "nabung 2jt per bulan"
+    const monthlyRaw = monthlyMatch[1].replace(',', '.');
+    const monthlyAmount = parseMonthlyAmount(monthlyRaw);
+    if (!Number.isFinite(monthlyAmount) || monthlyAmount <= 0) {
+      return { reply: 'Nominal per bulan nggak kebaca nih 🙏 Coba "nabung 2jt per bulan" ya.', newState: STATES.IDLE, newStateContext: {} };
+    }
+    const goalTitle = deriveGoalTitle(rawText);
+    trace.goalTitle = goalTitle;
+    trace.goalMonthlyAmount = monthlyAmount;
+    if (goalTitle) {
+      // Title provided, ask for deadline next
+      return {
+        reply: `Oke, ${formatRupiah(monthlyAmount)} per bulan untuk "${goalTitle}". Deadlinenya kapan? (contoh: "31 desember" atau "6 bulan lagi")`,
+        newState: STATES.AWAITING_GOAL_MONTHLY_DEADLINE,
+        newStateContext: { goalTitle, goalMonthlyAmount: monthlyAmount },
+      };
+    }
+    // No title in message, ask for title first
+    return {
+      reply: `Oke, ${formatRupiah(monthlyAmount)} per bulan. Goal-nya buat apa?`,
+      newState: STATES.AWAITING_GOAL_MONTHLY_TITLE,
+      newStateContext: { goalMonthlyAmount: monthlyAmount },
+    };
+  }
+
+  // Regular goal start flow
   const goalTitle = deriveGoalTitle(rawText);
   trace.goalTitle = goalTitle;
   return {
@@ -3338,6 +3485,16 @@ async function handleGoalStartIntent(user, rawText, trace) {
     // insert time ("Goal baru") - it is the user's own words.
     newStateContext: goalTitle ? { goalTitle } : {},
   };
+}
+
+/** Parse "2jt", "500rb", "1.5jt" etc. to raw rupiah amount. */
+function parseMonthlyAmount(raw) {
+  const lower = String(raw).toLowerCase().replace(',', '.');
+  if (lower.endsWith('jt')) return parseFloat(lower) * 1_000_000;
+  if (lower.endsWith('rb')) return parseFloat(lower) * 1_000;
+  if (lower.includes('juta')) return parseFloat(lower) * 1_000_000;
+  if (lower.includes('ribu')) return parseFloat(lower) * 1_000;
+  return parseFloat(lower);
 }
 
 /**
@@ -5265,16 +5422,32 @@ function budgetStatus(row) {
   return 'under';
 }
 
-/** Every number a budget read reports, precomputed as one backend fact. */
+/**
+ * Every number a budget read reports, precomputed as one backend fact.
+ * B-1/B-2: returns fields for two-line per-category format with emoji header
+ * and over-budget wording ("Lewat RpX · ~N% di atas budget").
+ */
 function budgetFact(row) {
-  const percent = row.percent;
+  const amount = Number(row.amount);
+  const spent = Number(row.spent) || 0;
+  const remaining = amount - spent;
+  const percent = amount > 0 ? (spent / amount) * 100 : null;
+  let status = 'ok';
+  if (percent !== null) {
+    if (percent > 100) status = 'over';
+    else if (percent >= 100) status = 'reached';
+    else status = 'under';
+  }
   return {
     category: row.category,
-    target: Number(row.amount),
-    spent: Number(row.spent) || 0,
-    remaining: row.remaining,
-    percent: percent === null || percent === undefined ? null : Math.round(percent),
-    status: budgetStatus(row),
+    target: amount,
+    spent,
+    remaining,
+    percent,
+    status,
+    // B-2: precomputed over-budget wording
+    overAmount: remaining < 0 ? -remaining : 0,
+    overPercent: percent !== null && percent > 100 ? Math.round(percent - 100) : 0,
   };
 }
 
@@ -5324,12 +5497,12 @@ function budgetPeriodNote(lower) {
 
 /**
  * This month's budget progress - same numbers as the dashboard card.
- *
- * Each line carries the full backend-computed fact: spent / target, the
- * percent, what is left, and the status (under | reached | over). The
- * existing prefix is byte-stable (the Priority 4 read tests pin it); the
- * facts are appended, and an empty state can name the one category the
- * user asked about.
+ * B-1 two-line format per category:
+ *   🍜 Makanan — Rp500.000 / Rp750.000
+ *   Sisa Rp250.000
+ * Over-budget (B-2):
+ *   ⚠️ Makanan — Rp575.000 / Rp500.000
+ *   Lewat Rp75.000 · ~15% di atas budget
  */
 function buildBudgetStatusReply(rows, { target = null, periodNote = '' } = {}) {
   if (!rows || rows.length === 0) {
@@ -5349,17 +5522,24 @@ function buildBudgetStatusReply(rows, { target = null, periodNote = '' } = {}) {
   }
   const lines = rows.slice(0, 5).map((row) => {
     const fact = budgetFact(row);
-    const percent = fact.percent === null ? '-' : `${fact.percent}%`;
+    const percent = fact.percent === null ? '-' : `${Math.round(fact.percent)}%`;
     const scope = row.wallet_id ? ' · dompet khusus' : '';
-    const status = fact.status ? ` · ${fact.status}` : '';
-    const remaining =
-      fact.remaining >= 0 ? `sisa ${formatRupiah(fact.remaining)}` : `lewat ${formatRupiah(-fact.remaining)}`;
-    return `- ${row.category}: ${formatRupiah(fact.spent)} / ${formatRupiah(fact.target)} (${percent}) · ${remaining}${status}${scope}`;
+    const emoji = CATEGORY_EMOJI[row.category] || '📌';
+    if (fact.status === 'over') {
+      return (
+        `${emoji} ${row.category} — ${formatRupiah(fact.spent)} / ${formatRupiah(fact.target)}\n` +
+        `  Lewat ${formatRupiah(fact.overAmount)} · ~${fact.overPercent}% di atas budget${scope}`
+      );
+    }
+    return (
+      `${emoji} ${row.category} — ${formatRupiah(fact.spent)} / ${formatRupiah(fact.target)} (${percent})${scope}\n` +
+      `  Sisa ${formatRupiah(fact.remaining)}`
+    );
   });
   const more = rows.length > 5 ? `\nMasih ${rows.length - 5} lagi ya.` : '';
   const monthLabel = insightsDomain.formatMonthLabel();
   return (
-    `${periodNote}*Budget ${monthLabel}*\n\n${lines.join('\n')}${more}\n\n` +
+    `${periodNote}*Budget ${monthLabel}*\n\n${lines.join('\n\n')}${more}\n\n` +
     'Kelola: "tambah/ubah/hapus budget ...", atau lihat kartu Budget di dashboard.'
   );
 }
@@ -6961,6 +7141,110 @@ async function handleAwaitingGoalDeadline(user, rawText, trace) {
 }
 
 /**
+ * GL-7: monthly-given flow - title collection (when not in initial message).
+ * Same hand-back rules as other AWAITING_* states.
+ */
+async function handleAwaitingGoalMonthlyTitle(user, rawText, trace) {
+  if (shouldHandBackToRouter(rawText, 'goal_start')) {
+    return handleIdle(user, rawText, trace);
+  }
+
+  const title = deriveGoalTitle(rawText);
+  if (!title) {
+    return {
+      reply: 'Judulnya belum kebaca nih 🙏 Coba "liburan" atau "dana darurat" ya.',
+      newState: STATES.AWAITING_GOAL_MONTHLY_TITLE,
+      newStateContext: user.state_context,
+    };
+  }
+
+  const monthlyAmount = user.state_context?.goalMonthlyAmount;
+  return {
+    reply: `Oke, ${formatRupiah(monthlyAmount)} per bulan untuk "${title}". Deadlinenya kapan? (contoh: "31 desember" atau "6 bulan lagi")`,
+    newState: STATES.AWAITING_GOAL_MONTHLY_DEADLINE,
+    newStateContext: { ...(user.state_context || {}), goalTitle: title },
+  };
+}
+
+/**
+ * GL-7: monthly-given flow - deadline collection, then compute target and confirm.
+ * Same hand-back rules as other AWAITING_* states.
+ */
+async function handleAwaitingGoalMonthlyDeadline(user, rawText, trace) {
+  const deadline = parseIndonesianDate(rawText);
+  trace.parsedDeadline = deadline;
+
+  if (!deadline) {
+    if (detectIntent(rawText) === 'goal_start' || shouldHandBackToRouter(rawText, 'goal_start')) {
+      return handleIdle(user, rawText, trace);
+    }
+    return {
+      reply: 'Hmm, tanggalnya belum pas nih. Coba bilang kayak "31 Desember 2026" ya',
+      newState: STATES.AWAITING_GOAL_MONTHLY_DEADLINE,
+      newStateContext: user.state_context,
+    };
+  }
+
+  const ctx = user.state_context || {};
+  const monthlyAmount = ctx.goalMonthlyAmount;
+  const goalTitle = ctx.goalTitle;
+
+  if (!Number.isFinite(monthlyAmount) || monthlyAmount <= 0) {
+    return {
+      reply: 'Eh, nominal per bulannya tadi hilang. Coba bilang "nabung 2jt per bulan" lagi ya.',
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  if (typeof goalTitle !== 'string' || !goalTitle.trim()) {
+    return {
+      reply: 'Goal buat apa nih? (misal "liburan" atau "dana darurat") 🎯',
+      newState: STATES.AWAITING_GOAL_MONTHLY_TITLE,
+      newStateContext: { goalMonthlyAmount: monthlyAmount },
+    };
+  }
+
+  // Compute target from monthly * months_remaining
+  const targetAmount = computeTargetFromMonthly(monthlyAmount, deadline);
+  if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
+    return {
+      reply: 'Deadlinenya terlalu dekat buat nominal per bulan itu 🙏 Coba deadline yang lebih jauh.',
+      newState: STATES.AWAITING_GOAL_MONTHLY_DEADLINE,
+      newStateContext: { goalMonthlyAmount: monthlyAmount, goalTitle },
+    };
+  }
+
+  return finishGoalCreation(user, { targetAmount, goalTitle, deadline }, trace);
+}
+
+/**
+ * Compute target amount from monthly savings and deadline.
+ * Uses the same logic as computeRequiredMonthlySaving but inverted:
+ * target = monthly * months_remaining (with 30-day months).
+ */
+function computeTargetFromMonthly(monthly, deadline) {
+  const monthlyAmount = Number(monthly);
+  if (!Number.isFinite(monthlyAmount) || monthlyAmount <= 0) return 0;
+
+  const deadlineText = String(deadline).slice(0, 10);
+  const deadlineMs = Date.parse(`${deadlineText}T00:00:00.000Z`);
+  if (Number.isNaN(deadlineMs)) return 0;
+
+  const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const now = new Date();
+  const todayWib = Math.floor((now.getTime() + WIB_OFFSET_MS) / 86400000);
+  const deadlineDay = Math.floor(deadlineMs / 86400000);
+  const daysLeft = deadlineDay - todayWib;
+
+  if (daysLeft <= 0) return 0;
+  if (daysLeft <= 30) return monthlyAmount; // Less than a month = just one month
+
+  const monthsLeft = Math.ceil(daysLeft / 30); // Round up partial months
+  return monthlyAmount * monthsLeft;
+}
+
+/**
  * Insert + confirmation of a goal (the tail of the AWAITING_GOAL_* flow).
  * Split out so the title question can re-enter at the same point instead
  * of restarting the whole flow.
@@ -7194,6 +7478,12 @@ export async function handleIncomingMessage(phoneNumber, rawText, waMessageId = 
           break;
         case STATES.AWAITING_GOAL_TITLE:
           result = await handleAwaitingGoalTitle(user, rawText, trace);
+          break;
+        case STATES.AWAITING_GOAL_MONTHLY_TITLE:
+          result = await handleAwaitingGoalMonthlyTitle(user, rawText, trace);
+          break;
+        case STATES.AWAITING_GOAL_MONTHLY_DEADLINE:
+          result = await handleAwaitingGoalMonthlyDeadline(user, rawText, trace);
           break;
         case STATES.AWAITING_GOAL_CONFIRM:
           result = await handleAwaitingGoalConfirm(user, rawText, trace);

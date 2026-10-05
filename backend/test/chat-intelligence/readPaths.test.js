@@ -142,22 +142,23 @@ describe('Priority 4: wallet / budget / kategori / goal reads answer with backen
     assert.equal(aiCalls.replies.length, 0);
   });
 
-  test('BD-01 "budget gue apa aja?" -> this month progress per budget, no write', async () => {
+  test('BD-01 "budget gue apa aja?" -> this month progress per budget, no write (B-1 two-line format)', async () => {
     const trace = await send(PHONE_A, 'budget gue apa aja?');
 
     assert.equal(trace.intent, 'budget_manage');
     assert.equal(trace.budgetOutcome, 'read');
-    assert.match(trace.reply, /Makanan & Minuman: Rp45\.000 \/ Rp500\.000 \(9%\)/);
-    assert.match(trace.reply, /Transport: Rp45\.000 \/ Rp500\.000 \(9%\)/);
+    // B-1: two-line format with emoji header
+    assert.match(trace.reply, /🍜 Makanan & Minuman — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/);
+    assert.match(trace.reply, /🚌 Transport — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/);
     assert.equal(aiCalls.replies.length, 0);
     assert.deepEqual(writesTo('budgets'), []);
   });
 
-  test('BD-08 "sisa budget makan gue berapa?" -> budget numbers, not a financial recap', async () => {
+  test('BD-08 "sisa budget makan gue berapa?" -> budget numbers, not a financial recap (B-1 two-line)', async () => {
     const trace = await send(PHONE_A, 'sisa budget makan gue berapa?');
 
     assert.equal(trace.budgetOutcome, 'read');
-    assert.match(trace.reply, /Makanan & Minuman: Rp45\.000 \/ Rp500\.000/);
+    assert.match(trace.reply, /🍜 Makanan & Minuman — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/);
     assert.doesNotMatch(trace.reply, /Pengeluaran total|Selisih/, 'never the recap summary');
     assert.equal(trace.recapPeriod, undefined, 'a budget read is not a recap');
   });
@@ -166,7 +167,8 @@ describe('Priority 4: wallet / budget / kategori / goal reads answer with backen
     const trace = await send(PHONE_A, 'budget makanan udah lewat belum?');
 
     assert.equal(trace.budgetOutcome, 'read');
-    assert.match(trace.reply, /\(9%\)/, '45.000 of 500.000 = 9%, still under');
+    // B-1 format with emoji
+    assert.match(trace.reply, /🍜 Makanan & Minuman — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/);
     assert.equal(aiCalls.replies.length, 0);
   });
 
@@ -322,16 +324,20 @@ describe('P2-A: wallet reads name their scope (audit WL-01/01B/01C/09)', () => {
   });
 });
 
-describe('P2-A: budget reads carry every backend fact (audit BD-01/01B/08/09/11)', () => {
-  test('under 100% -> target, spent, remaining, percent, status for EVERY budget', async () => {
+describe('P2-A: budget reads carry every backend fact (audit BD-01/01B/08/09/11) [B-1/B-2 format]', () => {
+  test('under 100% -> target, spent, remaining, percent, status for EVERY budget (B-1 two-line)', async () => {
     const trace = await send(PHONE_A, 'budget gue apa aja?');
 
     assert.equal(trace.budgetOutcome, 'read');
+    // B-1: two-line format with emoji
     assert.match(
       trace.reply,
-      /- Makanan & Minuman: Rp45\.000 \/ Rp500\.000 \(9%\) · sisa Rp455\.000 · under/,
+      /🍜 Makanan & Minuman — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/,
     );
-    assert.match(trace.reply, /- Transport: Rp45\.000 \/ Rp500\.000 \(9%\) · sisa Rp455\.000 · under/);
+    assert.match(
+      trace.reply,
+      /🚌 Transport — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/,
+    );
     assert.deepEqual(trace.budgetFacts[0], {
       category: 'Makanan & Minuman',
       target: 500_000,
@@ -339,11 +345,13 @@ describe('P2-A: budget reads carry every backend fact (audit BD-01/01B/08/09/11)
       remaining: 455_000,
       percent: 9,
       status: 'under',
+      overAmount: 0,
+      overPercent: 0,
     });
     assert.equal(aiCalls.replies.length, 0, 'the persona never calculates (SPEC 7.3)');
   });
 
-  test('exactly 100% -> status "reached" (integer math, backend-computed)', async () => {
+  test('exactly 100% -> status "reached" (integer math, backend-computed) (B-1)', async () => {
     db.tables.budgets.push(seedBudget('b-hiburan', USER_A, 'Hiburan', 45_000));
     db.tables.transactions.push(
       seedTx('tx-hiburan', USER_A, {
@@ -366,12 +374,15 @@ describe('P2-A: budget reads carry every backend fact (audit BD-01/01B/08/09/11)
         remaining: 0,
         percent: 100,
         status: 'reached',
+        overAmount: 0,
+        overPercent: 0,
       },
     ]);
-    assert.match(trace.reply, /\(100%\) · sisa Rp0 · reached/);
+    // B-1: reached status shows "Sisa Rp0"
+    assert.match(trace.reply, /🎮 Hiburan — Rp45\.000 \/ Rp45\.000 \(100%\)\n  Sisa Rp0/);
   });
 
-  test('over 100% -> status "over", remaining goes negative, reply says "lewat"', async () => {
+  test('over 100% -> status "over", remaining goes negative, reply says "lewat" (B-2 wording)', async () => {
     db.tables.budgets.push(seedBudget('b-sehat', USER_A, 'Kesehatan', 10_000));
     db.tables.transactions.push(
       seedTx('tx-sehat', USER_A, {
@@ -387,23 +398,24 @@ describe('P2-A: budget reads carry every backend fact (audit BD-01/01B/08/09/11)
     assert.equal(trace.budgetFacts[0].status, 'over');
     assert.equal(trace.budgetFacts[0].percent, 150);
     assert.equal(trace.budgetFacts[0].remaining, -5_000);
-    assert.match(trace.reply, /\(150%\) · lewat Rp5\.000 · over/);
+    // B-2: over-budget format with "Lewat RpX · ~N% di atas budget" (uses category emoji 🏥)
+    assert.match(trace.reply, /🏥 Kesehatan — Rp15\.000 \/ Rp10\.000\n  Lewat Rp5\.000 · ~50% di atas budget/);
   });
 
-  test('BD-08 "sisa budget makan gue berapa?" -> remaining stated in the reply', async () => {
+  test('BD-08 "sisa budget makan gue berapa?" -> remaining stated in the reply (B-1)', async () => {
     const trace = await send(PHONE_A, 'sisa budget makan gue berapa?');
 
     assert.equal(trace.budgetOutcome, 'read');
     assert.equal(trace.budgetReadTarget, 'Makanan & Minuman');
-    assert.match(trace.reply, /sisa Rp455\.000 · under/);
+    assert.match(trace.reply, /🍜 Makanan & Minuman — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/);
     assert.doesNotMatch(trace.reply, /Pengeluaran total|Selisih/, 'never the recap summary');
   });
 
-  test('specific category -> only that budget', async () => {
+  test('specific category -> only that budget (B-1 two-line)', async () => {
     const trace = await send(PHONE_A, 'budget Transport gue berapa?');
 
     assert.equal(trace.budgetReadTarget, 'Transport');
-    assert.match(trace.reply, /- Transport: /);
+    assert.match(trace.reply, /🚌 Transport — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/);
     assert.doesNotMatch(trace.reply, /Makanan & Minuman/, 'the other budgets stay out');
   });
 
@@ -422,7 +434,7 @@ describe('P2-A: budget reads carry every backend fact (audit BD-01/01B/08/09/11)
     assert.match(weekly.reply, /Budget Nera bulanan/);
     assert.match(weekly.reply, /mingguan atau per tanggal belum tersedia/);
     // The numbers below it are this month's REAL progress, not weekly guesses.
-    assert.match(weekly.reply, /Makanan & Minuman: Rp45\.000 \/ Rp500\.000 \(9%\)/);
+    assert.match(weekly.reply, /🍜 Makanan & Minuman — Rp45\.000 \/ Rp500\.000 \(9%\)\n  Sisa Rp455\.000/);
 
     const daily = await send(PHONE_A, 'budget tanggal 7 ada?');
     assert.equal(daily.budgetOutcome, 'read');
@@ -438,7 +450,7 @@ describe('P2-A: budget reads carry every backend fact (audit BD-01/01B/08/09/11)
     assert.equal(aiCalls.replies.length, 0);
   });
 
-  test('a budget row named after a shorter variant is still found (audit AM-04)', async () => {
+  test('a budget row named after a shorter variant is still found (audit AM-04) (B-1)', async () => {
     // The audit seeds a budget with raw category "Makanan" (no "& Minuman")
     // while the default active category is "Makanan & Minuman": the read
     // must find the budget that EXISTS instead of filtering it out and
@@ -449,18 +461,19 @@ describe('P2-A: budget reads carry every backend fact (audit BD-01/01B/08/09/11)
 
     assert.equal(trace.budgetOutcome, 'read');
     assert.equal(trace.budgetReadTarget, 'Makanan');
-    assert.match(trace.reply, /- Makanan: Rp\d[\d.]* \/ Rp500\.000/);
+    // B-1: uses default emoji 📌 for non-standard category
+    assert.match(trace.reply, /📌 Makanan — Rp0 \/ Rp500\.000 \(0%\)\n  Sisa Rp500\.000/);
     assert.doesNotMatch(trace.reply, /Belum ada/, 'the existing budget is listed, not denied');
   });
 
-  test('budget reads are scoped to the caller (audit section 7)', async () => {
+  test('budget reads are scoped to the caller (audit section 7) (B-1)', async () => {
     db.tables.budgets.push(seedBudget('b-kopi-b', USER_B, 'Kopi', 700_000));
 
     const mine = await send(PHONE_A, 'budget gue apa aja?');
     assert.doesNotMatch(mine.reply, /Rp700\.000/, "B's budget never surfaces for A");
 
     const theirs = await send(PHONE_B, 'budget gue apa aja?');
-    assert.match(theirs.reply, /Kopi: Rp0 \/ Rp700\.000 \(0%\)/);
+    assert.match(theirs.reply, /📌 Kopi — Rp0 \/ Rp700\.000 \(0%\)\n  Sisa Rp700\.000/);
     assert.doesNotMatch(theirs.reply, /Makanan & Minuman/, "A's budgets never surface for B");
   });
 

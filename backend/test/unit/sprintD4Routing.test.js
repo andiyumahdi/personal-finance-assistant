@@ -119,14 +119,16 @@ describe('classifier enum <-> handler map sync (D4 mandate)', () => {
   });
 });
 
-describe('Sprint D4 state machine (9 -> 9 for D4; Phase 2 -> 11)', () => {
-  test('D4 adds NO state - the pre-D4 states remain, in order (Phase 2 then appended two)', () => {
+describe('Sprint D4 state machine (9 -> 9 for D4; Phase 2 -> 11, Phase 6 GL-7 -> 13)', () => {
+  test('D4 adds NO state - the pre-D4 states remain, in order (Phase 2 then appended two, Phase 6 GL-7 then appended two)', () => {
     assert.deepEqual(Object.keys(STATES), [
       'IDLE',
       'AWAITING_DIRECTION',
       'AWAITING_GOAL_TARGET',
       'AWAITING_GOAL_DEADLINE',
       'AWAITING_GOAL_TITLE',
+      'AWAITING_GOAL_MONTHLY_TITLE',
+      'AWAITING_GOAL_MONTHLY_DEADLINE',
       'AWAITING_DELETE_CONFIRMATION',
       'AWAITING_EDIT_UPDATE',
       'AWAITING_CATEGORY_CONFIRM',
