@@ -8,11 +8,16 @@
 //     with a STATIC reply (zero generateReply calls, no persona);
 //   - no amount -> asks for it and stays IDLE with nothing written;
 //     same endpoint -> static no-op reply, nothing written;
-//   - everything else unresolved FAILS OPEN to ordinary recording -
-//     unknown/archived endpoints, reversed markers, even a REJECTED
-//     INSERT (a database without migration 20261002090000) - record or
-//     clarify, never a silent drop (SPECIFICATION.md section 1.5), with
-//     the reason kept observable on the trace;
+//   - V2 Phase 3 - INTENTIONAL CHANGES, §41 (UX contract T-2/T-4, CR-2,
+//     gap G8): BOTH-marker input with an unknown or archived endpoint now
+//     CLARIFIES (asks for exactly that side, lists the caller's active
+//     wallets, offers to create - zero writes) instead of falling open to
+//     a recording; reversed "ke ... dari" now PARSES and executes as the
+//     transfer it clearly is. The fail-open that REMAINS: a REJECTED
+//     INSERT (a database without migration 20261002090000), degraded DB
+//     reads, and SINGLE-marker person shapes - record or clarify, never a
+//     silent drop (SPECIFICATION.md section 1.5), reason observable on
+//     the trace;
 //   - person-transfers keep their existing transaction ->
 //     AWAITING_DIRECTION flow untouched (SPECIFICATION.md section 2.6);
 //   - transfers NEVER enter pending context (no confirmation step, no
@@ -205,40 +210,68 @@ describe('D4 happy path - one row, static confirmation, no state', () => {
   });
 });
 
-describe('D4 fail-open - unresolved input records the ordinary way (SPEC 1.5)', () => {
-  test('unknown endpoints (person-transfer shape) fall open to ordinary recording', async () => {
-    patchExtract(extractionFixture({ amount: 500000, description: 'pindahin duit' }));
+// §41 (V2 T-4, CR-2): these two used to assert the OLD fail-open outcome
+// (endpoint_unresolved -> insert). Both endpoints unknown/unresolvable
+// with BOTH markers present now clarifies instead - the whole point of
+// G8/CR-2 is that transfer-shaped input must never become an expense.
+describe('D4 unresolved input: clarify (V2 T-4) or fall open (SPEC 1.5)', () => {
+  test('both endpoints unknown -> CLARIFIES with candidates, writes NOTHING (T-4, NEW)', async () => {
+    // No patchExtract: extraction must never be reached (the default stub
+    // throws), proving zero AI calls on the clarify path (GC-6).
     const before = fake.tables.transactions.length;
 
     const trace = await handleIncomingMessage(PHONE_A, 'pindah 500rb dari andi ke budi');
 
     assert.equal(trace.intent, 'transfer');
-    assert.equal(trace.transferOutcome, 'endpoint_unresolved');
-    assert.equal(trace.dbAction.type, 'insert_transaction');
-    assert.equal(fake.tables.transactions.length, before + 1, 'recorded, never dropped');
-    assert.equal(transferRows().length, 1, 'no transfer row was invented');
-    const recorded = fake.tables.transactions.at(-1);
-    assert.equal(recorded.type, 'expense', 'the extraction path recorded it');
-    assert.equal(recorded.user_id, 'user-a');
+    assert.equal(trace.transferOutcome, 'endpoint_unknown');
+    assert.equal(trace.transferMissing, 'to', 'destination asked first');
+    assert.match(trace.reply, /Mau ke dompet mana\?/);
+    assert.match(trace.reply, /"budi"/, 'the unknown name is echoed back');
+    assert.match(trace.reply, /BRI/, 'active wallets offered as candidates');
+    assert.match(trace.reply, /Mandiri/, 'active wallets offered as candidates');
+    assert.doesNotMatch(trace.reply, /OVO/, 'archived wallets are never candidates');
+    assert.equal(fake.tables.transactions.length, before, 'no ordinary recording');
+    assert.equal(transferRows().length, 1, 'no transfer row either - it only ASKED');
+    assert.equal(userRow().state, 'IDLE', 'asking never traps the user');
+    assert.ok(userRow().state_context?.pendingTransfer, 'window held for the answer');
+    assert.ok(userRow().state_context.pendingTransfer.expiresAt, 'QA note 1: TTL, never dangling');
+    assert.equal(userRow().state_context.pendingTransfer.unknownName, 'budi');
   });
 
-  test('an ARCHIVED endpoint fails open too (archived leaves NEW transfers)', async () => {
-    patchExtract(extractionFixture({ amount: 500000 }));
+  test('an ARCHIVED endpoint -> CLARIFIES too, never becomes a recording (T-4, NEW)', async () => {
+    const before = fake.tables.transactions.length;
+
     const trace = await handleIncomingMessage(PHONE_A, 'pindah 500rb dari BRI ke OVO');
 
-    assert.equal(trace.transferOutcome, 'endpoint_unresolved');
-    assert.equal(trace.dbAction.type, 'insert_transaction');
+    assert.equal(trace.transferOutcome, 'endpoint_unknown');
+    assert.match(trace.reply, /Mau ke dompet mana\?/);
+    assert.match(trace.reply, /"OVO"/, 'the archived name is echoed as unknown');
+    assert.equal(fake.tables.transactions.length, before, 'nothing recorded');
     assert.equal(transferRows().length, 1, 'the archived wallet never became an endpoint');
+    assert.ok(userRow().state_context?.pendingTransfer?.expiresAt, 'TTL-bounded window');
   });
 
-  test('reversed markers (ke ... dari) are unparseable -> fail open, never a crash', async () => {
-    patchExtract(extractionFixture({ amount: 500000 }));
+  test('reversed markers (ke ... dari) PARSE and execute as a transfer (T-2, NEW)', async () => {
+    // No patchExtract: the reversed shape must need no AI at all (GC-6).
+    const before = fake.tables.transactions.length;
+
     const trace = await handleIncomingMessage(PHONE_A, 'pindah ke Mandiri dari BRI 500rb');
 
     assert.equal(trace.intent, 'transfer');
-    assert.equal(trace.transferOutcome, 'unparseable');
-    assert.equal(trace.dbAction.type, 'insert_transaction');
-    assert.equal(transferRows().length, 1, 'no transfer row from a reversed shape');
+    assert.equal(trace.transferOutcome, 'created');
+    assert.equal(trace.dbAction.type, 'insert_transfer');
+    assert.match(trace.reply, /udah dipindah dari BRI ke Mandiri/);
+    assert.equal(fake.tables.transactions.length, before + 1, 'the transfer row landed');
+    assert.equal(transferRows().length, 2, 'seeded + the new reversed-shape transfer');
+    const created = fake.tables.transactions.at(-1);
+    assert.equal(created.type, 'transfer');
+    assert.equal(created.amount, 500000);
+    assert.equal(created.wallet_id, 'w-a-bri', 'from = side after "dari"');
+    assert.equal(created.to_wallet_id, 'w-a-mandiri', 'to = side after "ke"');
+    assert.equal(created.category, 'Transfer');
+    assert.equal(userRow().state, 'IDLE');
+    assert.deepEqual(userRow().state_context, {}, 'a completed transfer holds no state');
+    assert.equal(generateReplyCalls, 0, 'static success reply, no persona');
   });
 
   test('a REJECTED transfer insert (migration not applied) fails open instead of crashing', async () => {

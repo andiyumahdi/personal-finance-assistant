@@ -32,6 +32,13 @@
 // default-fallback resolveWallet, because a transfer must never be
 // redirected to a wallet the user didn't name.
 //
+// V2 Phase 3 (decision DEC-2, UX contract W-3): wallets.opening_balance is
+// the one additive state change - balance = opening_balance + derived, so
+// the reducer seeds each wallet's fold with it exactly once, and
+// setOpeningBalance is the chat-reachable write (validated > 0, finite;
+// archived wallets and other users' rows rejected; never touches
+// transactions).
+//
 // Everything here is user-scoped: userId is mandatory on every I/O
 // function (asserted inside db/queries/wallets.js).
 
@@ -87,6 +94,9 @@ function hasDuplicateName(rows, name, excludeId = null) {
  *
  *   - balance: income adds, expense subtracts, ACTIVE rows only
  *     (soft-deleted history is excluded); non-finite amounts skipped.
+ *     Seeded per wallet with opening_balance (DEC-2: balance =
+ *     opening_balance + derived) - missing/null/garbage opening reads as
+ *     0, never NaN, so pre-migration rows keep their old numbers.
  *   - transfer (Sprint D4): the row references TWO wallets - it debits
  *     `wallet_id` (source) and credits `to_wallet_id` (destination) for
  *     the same amount, ACTIVE rows only, so a transfer nets to zero
@@ -108,7 +118,14 @@ function hasDuplicateName(rows, name, excludeId = null) {
 export function computeWalletDetails(wallets, txRows = []) {
   const defaultWallet = wallets.find((wallet) => wallet.is_default) ?? null;
   const details = new Map(
-    wallets.map((wallet) => [wallet.id, { balance: 0, transactionCount: 0 }]),
+    wallets.map((wallet) => {
+      // DEC-2 (V2 Phase 3): start at the opening balance instead of 0.
+      const opening = Number(wallet.opening_balance);
+      return [
+        wallet.id,
+        { balance: Number.isFinite(opening) ? opening : 0, transactionCount: 0 },
+      ];
+    }),
   );
 
   for (const row of txRows) {
@@ -277,6 +294,30 @@ export async function unarchiveWallet(userId, walletId) {
   const restored = await walletQueries.setUserWalletArchived(walletId, userId, null);
   if (!restored) return { status: 'not_found' };
   return { status: 'unarchived', name: row.name };
+}
+
+/**
+ * V2 Phase 3 (DEC-2, UX contract W-3): sets the wallet's opening balance -
+ * the starting number the read-time fold is seeded with (balance =
+ * opening_balance + derived). Never touches transactions.
+ * Statuses: 'set' (name/amount attached) | 'invalid_amount' (not a finite
+ * number > 0 - garbage never overwrites a real value, GC-1) | 'archived'
+ * (decision B: archived = not a choice for NEW state, so the user must
+ * reactivate first - honest refusal, no silent write) | 'not_found'
+ * (missing or belonging to another user - ownership enforced in the
+ * query layer, §43).
+ */
+export async function setOpeningBalance(userId, walletId, rawAmount) {
+  const amount = typeof rawAmount === 'number' ? rawAmount : Number(rawAmount);
+  if (!Number.isFinite(amount) || amount <= 0) return { status: 'invalid_amount' };
+
+  const row = await walletQueries.getUserWalletById(walletId, userId);
+  if (!row) return { status: 'not_found' };
+  if (row.archived_at) return { status: 'archived', name: row.name };
+
+  const updated = await walletQueries.setUserWalletOpeningBalance(walletId, userId, amount);
+  if (!updated) return { status: 'not_found' };
+  return { status: 'set', name: row.name, amount };
 }
 
 /**

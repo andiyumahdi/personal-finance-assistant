@@ -13,7 +13,12 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { getSupabaseAdminClient } from '@/lib/supabaseAdmin';
-import { isValidWalletType, validateWalletName, type WalletEntry } from '@/lib/wallets';
+import {
+  isValidWalletType,
+  validateWalletName,
+  validateWalletOpeningBalance,
+  type WalletEntry,
+} from '@/lib/wallets';
 
 /**
  * GET /api/wallets - the user's wallets (active AND archived) with the
@@ -60,7 +65,17 @@ export async function GET() {
   const wallets = rows ?? [];
   const defaultWallet = wallets.find((row) => row.is_default) ?? null;
   const details = new Map<string, { balance: number; transaction_count: number }>(
-    wallets.map((row) => [row.id, { balance: 0, transaction_count: 0 }]),
+    wallets.map((row) => {
+      // V2 Phase 3 parity (DEC-2, GC-8/D-6): seed with opening_balance so
+      // the dashboard shows the SAME balance as chat (domain
+      // computeWalletDetails). Missing/null/garbage opening (pre-migration
+      // rows) reads as 0, never NaN - mirrors the backend guard exactly.
+      const opening = Number(row.opening_balance);
+      return [
+        row.id,
+        { balance: Number.isFinite(opening) ? opening : 0, transaction_count: 0 },
+      ];
+    }),
   );
 
   for (const fact of facts ?? []) {
@@ -110,7 +125,8 @@ export async function GET() {
  * POST /api/wallets - create a wallet. Mirrors
  * backend/src/domain/wallets.js's createWallet: same validation
  * (lib/wallets.ts holds the mirrored rules), same check order (name ->
- * type -> own duplicate), same status names as error codes. Archived
+ * type -> optional opening balance -> own duplicate), same status names as
+ * error codes. Archived
  * rows keep occupying the name namespace (their unique index never
  * pauses), so they count as duplicates too. The default wallet is a ROW
  * for every user, so colliding with its name is a plain 'duplicate' -
@@ -132,6 +148,17 @@ export async function POST(request: Request) {
   if (!isValidWalletType(type)) {
     return NextResponse.json({ error: 'invalid_type', type: body?.type }, { status: 400 });
   }
+  // V2 Phase 4 (W-11, DEC-2): optional opening balance on create. Absent
+  // or empty -> the column default (0). Anything present must be a finite,
+  // non-negative number - same mirrored rule as lib/wallets.ts, so a value
+  // this endpoint accepts is one the chat path accepts (and vice versa).
+  const opening = validateWalletOpeningBalance(body?.opening_balance);
+  if (!opening.ok) {
+    return NextResponse.json(
+      { error: 'invalid_amount', reason: opening.reason },
+      { status: 400 },
+    );
+  }
 
   const supabase = getSupabaseAdminClient();
   const { data: existing, error } = await supabase
@@ -150,7 +177,13 @@ export async function POST(request: Request) {
 
   const { data, error: insertError } = await supabase
     .from('wallets')
-    .insert({ user_id: session.user.id, name: validated.name, type, is_default: false })
+    .insert({
+      user_id: session.user.id,
+      name: validated.name,
+      type,
+      is_default: false,
+      ...(opening.value !== null ? { opening_balance: opening.value } : {}),
+    })
     .select()
     .single();
 

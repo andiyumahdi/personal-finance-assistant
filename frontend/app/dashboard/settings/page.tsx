@@ -52,6 +52,7 @@ import {
   DEFAULT_WALLET_TYPE,
   isValidWalletType,
   validateWalletName,
+  validateWalletOpeningBalance,
   WALLET_TYPES,
   WALLET_TYPE_LABELS,
   type WalletEntry,
@@ -421,8 +422,10 @@ function describeWalletError(body: {
       return `Still referenced by ${body.transaction_count ?? 'some'} transactions - delete is disabled until none use it.`;
     case 'not_found':
       return 'That wallet no longer exists.';
-    case 'invalid_request':
-      return 'Nothing to change.';
+    case 'invalid_amount':
+      return body.reason === 'negative'
+        ? "Opening balance can't be negative."
+        : 'Opening balance must be a plain number, or left empty for Rp0.';
     default:
       return typeof body.error === 'string' && body.error
         ? body.error
@@ -444,6 +447,9 @@ function WalletsGroup() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [createName, setCreateName] = useState('');
   const [createType, setCreateType] = useState<WalletType>(DEFAULT_WALLET_TYPE);
+  // V2 Phase 4 (W-11): optional opening balance on create (DEC-2) - a
+  // plain string until submit; empty means "no opening" (column default 0).
+  const [createOpening, setCreateOpening] = useState('');
   const [createError, setCreateError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -485,12 +491,24 @@ function WalletsGroup() {
       setCreateError(describeWalletError({ error: 'invalid_type' }));
       return;
     }
+    // V2 Phase 4 (W-11): opening balance is optional; empty -> column
+    // default 0, anything typed must be a finite, non-negative number
+    // (mirrored rule - the API re-validates, fail-closed server truth).
+    const opening = validateWalletOpeningBalance(createOpening.trim());
+    if (!opening.ok) {
+      setCreateError(describeWalletError({ error: 'invalid_amount', reason: opening.reason }));
+      return;
+    }
     setBusy(true);
     try {
       const res = await fetch('/api/wallets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: validated.name, type: createType }),
+        body: JSON.stringify({
+          name: validated.name,
+          type: createType,
+          ...(opening.value !== null ? { opening_balance: opening.value } : {}),
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -499,6 +517,7 @@ function WalletsGroup() {
       }
       setCreateName('');
       setCreateType(DEFAULT_WALLET_TYPE);
+      setCreateOpening('');
       load(); // refetch so order, balances and counts stay server-truth
     } finally {
       setBusy(false);
@@ -744,6 +763,23 @@ function WalletsGroup() {
               placeholder="New wallet name — e.g. BCA Debit"
               className="h-9 flex-1 text-[13px]"
               aria-label="New wallet name"
+            />
+            {/* V2 Phase 4 (W-11): optional opening balance - DEC-2. Same
+                row as the name on desktop (sm:), stacks full-width on
+                mobile. Empty = Rp0 (column default). */}
+            <Input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step="any"
+              value={createOpening}
+              onChange={(e) => setCreateOpening(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void createWallet();
+              }}
+              placeholder="Opening balance (optional)"
+              className="h-9 w-full text-[13px] sm:w-44"
+              aria-label="Opening balance"
             />
             <Select
               value={createType}

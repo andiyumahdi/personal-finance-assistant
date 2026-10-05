@@ -20,6 +20,7 @@ import {
 import { createFakeSupabase } from '../helpers/fakeSupabase.js';
 import * as walletsDomain from '../../src/domain/wallets.js';
 import * as walletQueries from '../../src/db/queries/wallets.js';
+import { calculateTotals } from '../../src/domain/summary.js';
 import {
   DEFAULT_WALLET_NAME,
   DEFAULT_WALLET_TYPE,
@@ -714,5 +715,107 @@ describe('findActiveWalletExact (Sprint D4 endpoint resolver)', () => {
 
   test('requires userId (query-layer scoping asserts)', async () => {
     await assert.rejects(() => walletsDomain.findActiveWalletExact(undefined, 'BRI'), /user-scoped/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2 Phase 4 (UX contract W-3/W-9 unit legs, decision DEC-2): the opening
+// -balance half of every balance read plus the setOpeningBalance write
+// guard. The chat leg lives in test/v2/walletIntelligence.test.js (the
+// Journey B sequence) and the real-schema leg in test/integration/
+// queries.test.js (against the migrated wallets.opening_balance column) -
+// this block pins the DOMAIN/reducer math itself.
+// ---------------------------------------------------------------------------
+describe('W-3/W-9 (DEC-2): opening balance - unit legs', () => {
+  test('W-9: balance = opening + derived, seeded exactly once, count untouched', () => {
+    const wallets = [
+      makeWallet('w-open', USER_A, 'BSI', { type: 'bank', opening_balance: 500000 }),
+    ];
+    const rows = [
+      makeTx('tx-open-inc', USER_A, { wallet_id: 'w-open', type: 'income', amount: 300000 }),
+      makeTx('tx-open-exp', USER_A, { wallet_id: 'w-open', amount: 100000 }),
+    ];
+    const details = walletsDomain.computeWalletDetails(wallets, rows);
+    assert.equal(details.get('w-open').balance, 700000);
+    assert.equal(details.get('w-open').transactionCount, 2, 'the opening is NOT a transaction');
+  });
+
+  test('W-9: missing / null / garbage opening reads as 0, never NaN (pre-migration rows)', () => {
+    const wallets = [
+      makeWallet('w-undef', USER_A, 'Undefined'),
+      makeWallet('w-null', USER_A, 'Null', { opening_balance: null }),
+      makeWallet('w-junk', USER_A, 'Junk', { opening_balance: 'abc' }),
+    ];
+    const details = walletsDomain.computeWalletDetails(wallets, []);
+    assert.equal(details.get('w-undef').balance, 0);
+    assert.equal(details.get('w-null').balance, 0);
+    assert.equal(details.get('w-junk').balance, 0);
+  });
+
+  test('W-9: a transfer MOVES money between the two openings (net zero for the user)', () => {
+    const wallets = [
+      makeWallet('w-src', USER_A, 'Src', { opening_balance: 1000000 }),
+      makeWallet('w-dst', USER_A, 'Dst', { opening_balance: 0 }),
+    ];
+    const rows = [
+      makeTx('tx-trf-open', USER_A, {
+        type: 'transfer',
+        amount: 400000,
+        wallet_id: 'w-src',
+        to_wallet_id: 'w-dst',
+      }),
+    ];
+    const details = walletsDomain.computeWalletDetails(wallets, rows);
+    assert.equal(details.get('w-src').balance, 600000);
+    assert.equal(details.get('w-dst').balance, 400000);
+    const total = details.get('w-src').balance + details.get('w-dst').balance;
+    assert.equal(total, 1000000, 'transfers never mint money - the sum equals the openings');
+  });
+
+  test('W-3: the opening never leaks into recap income (fold has no side effects)', () => {
+    const wallets = [makeWallet('w-open', USER_A, 'BSI', { opening_balance: 500000 })];
+    const rows = [];
+    const details = walletsDomain.computeWalletDetails(wallets, rows);
+    assert.equal(details.get('w-open').balance, 500000, 'the BALANCE shows the opening');
+    assert.deepEqual(rows, [], 'the fold fabricated no transaction');
+    assert.deepEqual(
+      calculateTotals(rows),
+      { income: 0, expense: 0, balance: 0 },
+      'recap income is UNCHANGED by the opening balance (W-3)',
+    );
+  });
+
+  test('W-3 write: setOpeningBalance persists a positive finite amount (owner-scoped)', async () => {
+    const result = await walletsDomain.setOpeningBalance(USER_A, 'w-a-bri', 500000);
+    assert.deepEqual(result, { status: 'set', name: 'BRI', amount: 500000 });
+    assert.equal(walletRow('w-a-bri').opening_balance, 500000);
+    assert.equal(transactionWrites().length, 0, 'never touches transactions (DEC-2)');
+  });
+
+  test('W-3 write: garbage amounts are refused and the real value stays (GC-1)', async () => {
+    walletRow('w-a-bri').opening_balance = 150000;
+    fake.resetCalls();
+    for (const bad of [0, -5, NaN, Infinity, 'abc']) {
+      const result = await walletsDomain.setOpeningBalance(USER_A, 'w-a-bri', bad);
+      assert.equal(result.status, 'invalid_amount', `refused: ${String(bad)}`);
+    }
+    assert.equal(walletRow('w-a-bri').opening_balance, 150000, 'never overwritten by garbage');
+    assert.equal(
+      fake.calls.filter((c) => c.table === 'wallets' && c.op !== 'select').length,
+      0,
+      'garbage never even reaches a write',
+    );
+  });
+
+  test('W-3 write: an ARCHIVED wallet is refused, not written (decision B)', async () => {
+    const result = await walletsDomain.setOpeningBalance(USER_A, 'w-a-mandiri', 100000);
+    assert.equal(result.status, 'archived');
+    assert.equal(walletRow('w-a-mandiri').opening_balance ?? 0, 0, 'nothing written');
+  });
+
+  test("W-3 write: another user's userId cannot set it (not_found, �43 ownership)", async () => {
+    const result = await walletsDomain.setOpeningBalance(USER_B, 'w-a-bri', 100000);
+    assert.equal(result.status, 'not_found');
+    assert.equal(walletRow('w-a-bri').opening_balance ?? 0, 0, "B's write never landed on A's row");
   });
 });

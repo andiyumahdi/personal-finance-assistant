@@ -57,6 +57,25 @@ export function validateWalletName(
   return { ok: true, name };
 }
 
+// --- V2 Phase 4 (UX contract W-11, DEC-2): opening balance on create. ---
+// Mirrors the backend's opening-balance stance (domain setOpeningBalance
+// guards + the wallets.opening_balance column default): a create may
+// declare a finite, non-negative starting balance; empty/absent means "no
+// opening" (column default 0). Negative / NaN / Infinity / non-numeric
+// junk -> invalid_amount, the same status name the API returns. Zero is
+// accepted as the harmless default. No upper cap, exactly like the chat
+// path (shared open point, noted in the V2 contract).
+
+export function validateWalletOpeningBalance(
+  raw: unknown,
+): { ok: true; value: number | null } | { ok: false; reason: string } {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: null };
+  const value = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(value)) return { ok: false, reason: 'not_finite' };
+  if (value < 0) return { ok: false, reason: 'negative' };
+  return { ok: true, value };
+}
+
 /** One row of GET /api/wallets: DB columns + computed balance/count. */
 export type WalletEntry = {
   id: string;

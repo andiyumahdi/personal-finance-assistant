@@ -15,6 +15,7 @@
     "test:golden": "node --test test/integration/aiExtraction.test.js",
     "test:intent": "node --test test/integration/intentClassifier.test.js",
     "test:chat-intelligence": "node --test test/chat-intelligence/*.test.js",
+    "test:v2": "node --test test/v2/*.test.js",
     "test": "npm run test:unit",
     "pipeline": "node scripts/testPipeline.js",
     "extraction": "node scripts/testExtraction.js",

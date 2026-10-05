@@ -122,6 +122,27 @@ export async function setUserWalletArchived(id, userId, archivedAt) {
   return data;
 }
 
+/**
+ * Sets (or replaces) the DEC-2 opening balance - the only write in this
+ * file that targets a plain column. User-scoped like every other update:
+ * returns the updated row, or null when not found/not owner (ownership is
+ * enforced HERE, never by knowing the id - see the header).
+ */
+export async function setUserWalletOpeningBalance(id, userId, openingBalance) {
+  assertUserScope(userId, 'setUserWalletOpeningBalance');
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('wallets')
+    .update({ opening_balance: openingBalance })
+    .eq('id', id)
+    .eq('user_id', userId)
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
 /** User-scoped. Returns the deleted row, or null when not found/not owner. */
 export async function deleteUserWalletById(id, userId) {
   assertUserScope(userId, 'deleteUserWalletById');

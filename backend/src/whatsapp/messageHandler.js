@@ -220,15 +220,24 @@ const BUDGET_DELETE_VERBS = ['hapus', 'delete', 'buang'];
 // Sprint D4 (Transfer): the dedicated verb family for moving money between
 // the caller's own wallets (approved grammar v1 - word-boundary matches,
 // five forms). Note this is deliberately NARROWER than TRANSACTION_VERBS
-// ('transfer'/'trf' also gate the ordinary recording path below): here the
-// verb is only ever accepted TOGETHER with BOTH structural markers "dari"
-// and "ke" (isTransferRequest), which is what keeps person-transfers like
-// "transfer ke andi 500rb" / "transfer andi 500rb" out of this intent so
-// they keep their existing extraction / AWAITING_DIRECTION flow untouched
-// (SPECIFICATION.md section 2.6). "transferkan" is NOT in the list by
-// decision - it falls through to the ordinary recording path, which
+// ('transfer'/'trf' also gate the ordinary recording path below): at the
+// ROUTER level the verb is only ever accepted TOGETHER with BOTH structural
+// markers "dari" and "ke" (isTransferRequest), which is what keeps
+// person-transfers like "transfer ke andi 500rb" / "transfer andi 500rb" out
+// of this intent so they keep their existing extraction / AWAITING_DIRECTION
+// flow untouched (SPECIFICATION.md section 2.6). "transferkan" is NOT in the
+// list by decision - it falls through to the ordinary recording path, which
 // records or clarifies it like any other transaction-shaped message.
-const TRANSFER_VERB_PATTERN = /\b(pindah|pindahin|pindahkan|transfer|trf)\b/i;
+//
+// V2 Phase 3 (UX contract T-2, brief section 9): the grammar also accepts
+// the natural verbs "geser" / "masukin" / "kirim" - but those three are
+// WEAK verbs (they happen to be ordinary Indonesian words), so at router
+// level AND in the transfer pre-check they only count when the message
+// carries a money amount ("kirim pesan dari andi ke budi" must stay an
+// ordinary message). The strong five keep working with no amount ("pindah
+// dari BRI ke Mandiri" still asks for the amount - T-5).
+const TRANSFER_VERB_PATTERN = /\b(pindah|pindahin|pindahkan|transfer|trf|geser|masukin|kirim)\b/i;
+const TRANSFER_WEAK_VERBS = ['geser', 'masukin', 'kirim'];
 
 // Signals that a message is plausibly about a transaction - checked BEFORE
 // calling Gemini extraction, so an obviously non-financial message doesn't
@@ -437,6 +446,50 @@ const TRANSFER_SAME_WALLET_REPLY =
 // the amount may be edited through the Sprint C flow.
 const TRANSFER_EDIT_CATEGORY_REPLY =
   'Baris transfer cuma bisa diubah nominalnya ya 🙏 Kategori sama dompetnya udah nempel di transfer itu.';
+
+// --- V2 Phase 3 static replies (W-3 opening balance, W-4 existence read,
+// W-8 manage candidates, T-3/T-4 transfer clarification) - same convention
+// as every block above: string literals on purpose, NOT persona-generated,
+// so these paths stay fully deterministic with Gemini down (GC-6). Dynamic
+// facts (wallet names, balances, candidate lists) are assembled inline in
+// the handlers from backend-computed data (GC-1). Shape: direct answer
+// first, at most one next-action line (GC-2); casual ID; none of the §37
+// banned patterns (GC-3).
+const WALLET_READ_DEGRADED_REPLY =
+  'Aku lagi susah ngakses data dompet nih 🙏 Coba lagi sebentar lagi ya.';
+// W-4 pinned copy (UX contract): definitive empties say "Belum ada" (GC-4).
+const WALLET_EXIST_NOT_FOUND_REPLY = 'Belum ada — mau dibikin?';
+const WALLET_CREATE_FIRST_REPLY =
+  'Belum ada dompet nih. Bikin dulu lewat "tambah dompet <nama>" ya.';
+const WALLET_CANDIDATES_PREFIX_REPLY = 'Maksudnya yang mana nih?';
+// W-3 opening-balance candidates: a bare-name reply IS claimed by the
+// pendingOpeningBalance gate in handleIdle, so "just reply the name" is a
+// true promise here.
+const WALLET_CANDIDATES_HINT_REPLY = 'Balas namanya yang bener ya.';
+// W-8 manage candidates: a bare name has NO claim path for rename/archive,
+// so the hint must ask for the command to be re-sent instead of promising
+// something that would fall to the unclear reply (honesty, GC-4).
+const WALLET_MANAGE_CANDIDATES_HINT_REPLY =
+  'Tulis ulang perintahnya ya, misalnya "arsipkan dompet BCA".';
+const WALLET_OPENING_ARCHIVED_REPLY =
+  'Dompetnya lagi diarsipkan nih - aktifin dulu lewat "aktifkan dompet <nama>" ya.';
+const WALLET_OPENING_SAVE_FAILED_REPLY =
+  'Waduh, saldo awalnya gagal kesimpen nih 🙏 Coba lagi sebentar lagi ya.';
+// T-3 pinned ask (UX contract copy): only the MISSING endpoint is asked.
+const TRANSFER_ASK_TO_PREFIX = 'Mau ke dompet mana?';
+const TRANSFER_ASK_FROM_PREFIX = 'Dari dompet mana?';
+const TRANSFER_CANDIDATE_HINT_REPLY = 'Balas namanya ya.';
+const TRANSFER_CREATE_HINT_REPLY =
+  'Bikin dulu lewat "tambah dompet <nama>" kalau belum ada.';
+
+/**
+ * Bullet list of wallet names for a clarification ask - names only (the
+ * user is picking an endpoint, not auditing balances), capped so a long
+ * wallet list never turns the reply into a dump (GC-2 / GC-3).
+ */
+function formatWalletNameLines(wallets, limit = 5) {
+  return wallets.slice(0, limit).map((wallet) => `- ${wallet.name}`).join('\n');
+}
 
 /**
  * Cheap, deterministic check for "does this message plausibly describe a
@@ -650,8 +703,37 @@ function isBudgetManageRequest(lower) {
  * and help language has already won by then.
  */
 function isTransferRequest(lower) {
+  return isTransferShapedMessage(lower) && containsWord(lower, 'dari') && containsWord(lower, 'ke');
+}
+
+/**
+ * V2 Phase 3 (UX contract T-2/T-3, CR-2): a WIDER "transfer-shaped" test
+ * used by the transaction-path pre-check (handleTransactionIntent entry):
+ * dedicated transfer verb + AT LEAST ONE endpoint marker ("dari" or "ke"),
+ * where the weak verbs (geser / masukin / kirim) additionally require a
+ * money amount so ordinary phrases ("kirim pesan dari andi ke budi") are
+ * never hijacked.
+ *
+ * Routing (detectIntent) deliberately still demands BOTH markers
+ * (isTransferRequest) so the pinned D4 routing contract - person-transfers
+ * like "transfer ke andi 500rb" / "pindah uang ke andi 500rb" reaching the
+ * transaction intent (SPEC 2.6, test/unit/sprintD4Routing.test.js) - is
+ * untouched. The single-marker handling happens ONE level down: the
+ * pre-check diverts the message to handleTransferIntent, which asks only
+ * for the missing endpoint when the provided one resolves to one of the
+ * caller's own wallets (T-3), and fails open to ordinary extraction when
+ * it does not (person-transfer / D4 fail-open preserved - SPEC 2.6).
+ *
+ * Pure, no I/O. Exported for tests.
+ */
+export function isTransferShapedMessage(rawText) {
+  const lower = String(rawText ?? '').toLowerCase();
   if (!TRANSFER_VERB_PATTERN.test(lower)) return false;
-  return containsWord(lower, 'dari') && containsWord(lower, 'ke');
+  if (!containsWord(lower, 'dari') && !containsWord(lower, 'ke')) return false;
+  if (TRANSFER_WEAK_VERBS.some((verb) => containsWord(lower, verb)) && parseMoneyAmount(lower) === null) {
+    return false;
+  }
+  return true;
 }
 
 // --- Phase 2 (Chat Intelligence fix) routing signals -----------------------
@@ -768,6 +850,116 @@ function isWalletReadRequest(lower) {
     return true;
   }
   return READ_VERBS.some((verb) => containsWord(lower, verb)) || READ_HINTS.test(lower);
+}
+
+// ---------------------------------------------------------------------------
+// V2 Phase 3 (UX contract W-4 - semantic wallet existence read, brief
+// Journey B, gap G7): "BSI ada belum?" / "bsi udh ada blm" name a wallet
+// WITHOUT the "dompet"/"saldo" keyword, so the container reads above never
+// match and the message used to fall to 'unclear'. Guards so ONLY that
+// shape claims (regression caught by chat-intelligence BD-09/BD-11):
+//   - no amount, full-message anchor (transaction-shaped text like
+//     "beli saldo 200rb" stays a transaction);
+//   - the whole message must not name ANOTHER domain (budget/kategori/
+//     goal/... questions are never wallet-existence questions);
+//   - the captured name must not BE a wallet container ("dompetnya ada
+//     belum?" is a STATUS read - isWalletReadRequest owns it), must be at
+//     most 3 words, must not start with a sentence opener ("oh iya itu
+//     ada gak?"), and must not be one of the exact non-wallet names
+//     ("ada uang gak?" keeps its old path).
+// Pure, no I/O.
+// ---------------------------------------------------------------------------
+const NON_WALLET_EXISTENCE_DOMAIN_PATTERN =
+  /\b(?:budget|kategori|category|goal|tabungan|transaksi|pemasukan|pengeluaran|rekap|laporan|anggaran|jadwal|reminder|nft)\b/i;
+
+// Suffixed forms count too: "dompetnya" is still the container word, not a
+// name (the (nya|ku|mu)? tail exists because \b after "dompet" would never
+// match inside "dompetnya").
+const WALLET_CONTAINER_NAME_PATTERN =
+  /\b(?:dompet|wallet|saldo|rekening|rek|akun|kartu|uang|duit)(?:nya|ku|mu)?\b/i;
+
+const NON_NAME_OPENERS = new Set([
+  'ada', 'oh', 'okey', 'oke', 'ok', 'iya', 'iyya', 'yoi', 'eh', 'e', 'nah',
+  'gimana', 'gmn', 'kalo', 'kalau', 'kayak', 'terus', 'habis', 'baru',
+  'mau', 'bisa', 'boleh', 'kenapa', 'kapan', 'siapa', 'mana', 'itu',
+  'ini', 'yang', 'udah', 'udh', 'sudah', 'kan', 'lho', 'lah', 'kok',
+  'coba', 'jangan', 'kira', 'soalnya', 'emang', 'bener',
+]);
+
+const NON_WALLET_EXISTENCE_NAMES = new Set([
+  'uang', 'duit', 'receh', 'sisa', 'saldo', 'makanan', 'minuman', 'jajan',
+  'belanja', 'tagihan', 'anggaran', 'budget', 'goal', 'transaksi',
+  'pemasukan', 'pengeluaran', 'kategori', 'kopi',
+]);
+
+// name-first forms only: "<name> ada (belum|blm|gak|ga)?", "<name> (udh|
+// udah|sudah) ada", "<name> (blm|belum) (ada)?" - with an optional
+// "dompet"/"wallet" lead-in and optional trailing question punctuation.
+const WALLET_EXISTENCE_PATTERN =
+  /^(?:dompet\s+|wallet\s+)?([a-z0-9&][a-z0-9& ]{1,28}?)\s+(?:ada(?:\s+(?:belum|blm|gak|ga|lagi|nggak|enggak))?|(?:udh|udah|sudah)\s+ada|(?:blm|belum|belom)(?:\s+ada)?)\s*(?:\s+(?:belum|blm))?\s*[?.!.]*$/i;
+
+/**
+ * { name } when the message IS a wallet-existence question, else null.
+ * name keeps the user's original casing (all matchers downstream are
+ * case-insensitive). Exported for tests.
+ */
+export function parseWalletExistenceMessage(rawText) {
+  const raw = String(rawText ?? '').trim();
+  const lower = raw.toLowerCase();
+  if (parseMoneyAmount(lower) !== null) return null;
+  if (NON_WALLET_EXISTENCE_DOMAIN_PATTERN.test(lower)) return null;
+  const match = raw.match(WALLET_EXISTENCE_PATTERN);
+  if (!match) return null;
+  const name = match[1].replace(/\s+/g, ' ').trim();
+  if (name.length < 2 || name.length > 30) return null;
+  if (!/\p{L}/u.test(name)) return null;
+  if (WALLET_CONTAINER_NAME_PATTERN.test(name.toLowerCase())) return null;
+  const words = name.split(' ');
+  if (words.length > 3) return null;
+  if (NON_NAME_OPENERS.has(words[0].toLowerCase())) return null;
+  if (NON_WALLET_EXISTENCE_NAMES.has(name.toLowerCase())) return null;
+  return { name };
+}
+
+function isWalletExistenceRequest(lower) {
+  return parseWalletExistenceMessage(lower) !== null;
+}
+
+/**
+ * V2 Phase 3 (UX contract W-3 + DEC-2 + QA note 2): "saldo awal 500rb" is
+ * a WALLET write - the four-way distinction (transfer / income / expense /
+ * saldo awal) must never let it reach the extraction path as an expense.
+ * Requires the exact "saldo awal" phrase AND a money amount; the question
+ * form stays out because detectIntent only consults this inside the writes
+ * slot (!isQuestionMessage), so "gimana isi saldo awal?" keeps its
+ * knowledge path. Pure, no I/O.
+ */
+function isWalletOpeningBalanceRequest(lower) {
+  if (!/\bsaldo\s+awal\b/.test(lower)) return false;
+  return parseMoneyAmount(lower) !== null;
+}
+
+/**
+ * Parses the opening-balance statement: { amount, walletName } where
+ * walletName is null for the bare follow-up form ("saldo awal 500rb") and
+ * the named form keeps original casing ("saldo awal BSI 500rb"). The amount
+ * must be a real money amount (> 0), else null so the message falls
+ * through to the ordinary paths. Pure, no I/O. Exported for tests.
+ */
+export function parseOpeningBalanceMessage(rawText) {
+  const raw = String(rawText ?? '').trim();
+  const lower = raw.toLowerCase();
+  if (!/\bsaldo\s+awal\b/.test(lower)) return null;
+  const amount = parseMoneyAmount(lower);
+  if (amount === null || !(amount > 0)) return null;
+  const name = raw
+    .replace(/\bsaldo\s+awal\b/gi, ' ')
+    .replace(/(?:^|[^\d])\d[\d.,]*\s*(?:rb|ribu|rebu|k|jt|juta)?/gi, ' ')
+    .replace(/\b(?:rp\.?|yang|dompet|wallet|nya|di|ke|jadi|sebesar|sekitar|donk|dong|ya|nih|aja|atur|set|isi|masukin)\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}&]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { amount, walletName: name.length >= 2 ? name : null };
 }
 
 function isBudgetReadRequest(lower) {
@@ -942,6 +1134,9 @@ export function detectIntent(rawText) {
   if (!howTo) {
     if (isCategoryReadRequest(lower)) return 'category_manage';
     if (isWalletReadRequest(lower)) return 'wallet_manage';
+    // V2 W-4: "BSI ada belum?" has no container keyword - semantic
+    // existence read, answered with backend facts (never 'unclear').
+    if (isWalletExistenceRequest(lower)) return 'wallet_manage';
     if (isBudgetReadRequest(lower)) return 'budget_manage';
     if (isGoalReadRequest(lower) || isSavingsPlanRequest(lower)) return 'goal_manage';
   }
@@ -951,6 +1146,9 @@ export function detectIntent(rawText) {
   if (!isQuestionMessage(lower)) {
     if (isCategoryManageRequest(lower)) return 'category_manage';
     if (isWalletManageRequest(lower)) return 'wallet_manage';
+    // V2 W-3 (DEC-2): "saldo awal 500rb" is a wallet write - it must beat
+    // the transaction digit gate below, or it records as an expense.
+    if (isWalletOpeningBalanceRequest(lower)) return 'wallet_manage';
     if (isBudgetManageRequest(lower)) return 'budget_manage';
     if (isGoalManageRequest(lower)) return 'goal_manage';
   }
@@ -1475,42 +1673,135 @@ export function parseBudgetManageMessage(rawText) {
 }
 
 /**
- * Sprint D4 grammar (pure): "<verb> [nominal] dari <dompet> ke <dompet>",
- * where <verb> is one of TRANSFER_VERB_PATTERN's five forms. Returns
- * { amount, from, to } when the dedicated verb is present AND the message
- * contains "dari" BEFORE "ke" (the regex enforces both markers and their
- * order in one shot - all three structural elements are mandatory per the
- * approved grammar). Returns null otherwise, so the caller can fail open
- * to ordinary transaction recording instead of guessing endpoints.
+ * V2 Phase 3 grammar v2 (pure; UX contract T-2/T-3): "<verb> [nominal]
+ * (dari <dompet>) (ke <dompet>)" where <verb> is one of
+ * TRANSFER_VERB_PATTERN's forms. Grammar v1 required BOTH markers "dari"
+ * and "ke" IN ORDER and returned null otherwise; v2 accepts every
+ * natural-language variation the brief lists (section 9):
  *
- *   - amount: the first money token in the whole message (parseAmount -
- *     null when there is no number; the handler then asks for it rather
- *     than recording anything). Numbers INSIDE endpoint names ("BRI 2")
- *     are accepted as the amount - the same trade-off every other amount
- *     parse in this file makes (parse-first, never block recording).
- *   - from/to: the trimmed fragments between the markers (possibly ''
- *     when nothing follows one; leading/trailing punctuation stripped so
- *     "ke Mandiri." still matches a wallet named "Mandiri"). They are
- *     NEVER resolved here - the handler resolves them strictly against
- *     the caller's ACTIVE wallets and falls open to the ordinary
- *     recording path when a name doesn't match (person-transfers like
- *     "transfer dari andi ke budi" land exactly there).
+ *   - "pindah 500rb dari BCA ke BSI"    classic (unchanged output)
+ *   - "pindahin 500rb ke BSI dari BCA"  reversed "ke ... dari"
+ *   - "pindahin 500rb dari BCA"         only 'dari' -> to === ''
+ *   - "pindahin 500rb ke BSI"           only 'ke'   -> from === ''
+ *   - "geser 500rb BCA ke BSI"          no 'dari'; the leftover before 'ke'
+ *                                       minus verb/amount/filler = from
+ *
+ * Returns { amount, from, to } with '' for a side the message never
+ * mentioned - the SAME shape grammar v1 already used for an empty
+ * endpoint, so callers keep reading from/to as strings. null only when
+ * there is no dedicated transfer verb or NO endpoint marker at all
+ * ("pindah 500rb", "jajan 20rb") - the handler then fails open to
+ * ordinary recording (D4 decision, unchanged).
+ *
+ *   - amount: the first money token of the whole message (parseAmount) -
+ *     null when absent; the handler asks instead of recording (T-5).
+ *   - from/to: trimmed fragments with money tokens stripped so a trailing
+ *     amount never becomes part of a wallet name ("dari BRI 500rb" ->
+ *     "BRI"; non-money digits stay, e.g. "BRI 2"), but other words stay
+ *     VERBATIM ("OVO ya") - resolution remains the handler's job, never
+ *     guessed here. '?' is punctuation, not part of a name (P2-C).
  */
+
+/**
+ * Removes money tokens from a fragment, mirroring parseMoneyAmount's
+ * rules: a unit suffix (rb/ribu/k/jt/juta) always marks money; a bare
+ * number only when it is >= 1000. Small digits stay verbatim so a wallet
+ * legitimately named "BRI 2" keeps resolving.
+ */
+function stripMoneyTokens(value) {
+  return String(value ?? '').replace(
+    /\b\d[\d.,]*\s*(?:rb|ribu|rebu|k|jt|juta)?\b/gi,
+    (token) => {
+      if (/(?:rb|ribu|rebu|k|jt|juta)\s*$/i.test(token)) return ' ';
+      const bare = Number(token.trim().replace(/\./g, '').replace(/,/g, '.'));
+      return Number.isFinite(bare) && bare >= 1000 ? ' ' : token;
+    },
+  );
+}
+
+const TRANSFER_VERB_GLOBAL_PATTERN = /\b(?:pindah|pindahin|pindahkan|transfer|trf|geser|masukin|kirim)\b/gi;
+
 export function parseTransferCommand(rawText) {
   const text = String(rawText ?? '');
   if (!TRANSFER_VERB_PATTERN.test(text)) return null;
-  const endpoints = text.match(/\bdari\b([\s\S]*?)\bke\b([\s\S]*)/i);
-  if (!endpoints) return null;
-  // P2-C (section 9A): "?" is punctuation, not part of a wallet name - a
-  // question-form transfer ("kalau mau transfer 100rb dari BRI ke Dana?")
-  // must still resolve its endpoints instead of silently degrading to an
-  // ordinary transaction. The fall-open path below stays untouched.
-  const trimEdges = (value) => value.replace(/^[.,!?:\-\s]+|[.,!?:\-\s]+$/g, '');
-  return {
-    amount: parseAmount(text),
-    from: trimEdges(endpoints[1]),
-    to: trimEdges(endpoints[2]),
-  };
+
+  const dariMatch = /\bdari\b/i.exec(text);
+  const keMatch = /\bke\b/i.exec(text);
+  if (!dariMatch && !keMatch) return null;
+
+  const trimEdges = (value) =>
+    stripMoneyTokens(value)
+      .replace(/\s+/g, ' ')
+      .replace(/^[.,!?:\-\s]+|[.,!?:\-\s]+$/g, '')
+      .trim();
+
+  const fromIdx = dariMatch ? dariMatch.index : -1;
+  const keIdx = keMatch ? keMatch.index : -1;
+
+  if (keIdx < 0 || (fromIdx >= 0 && fromIdx < keIdx)) {
+    // Classic "dari <x> ke <y>" (T-2 variation 1), also dari-only (T-2
+    // variation 3: to === '').
+    const from = fromIdx >= 0 ? text.slice(fromIdx + dariMatch[0].length, keIdx < 0 ? undefined : keIdx) : '';
+    const to = keIdx >= 0 ? text.slice(keIdx + keMatch[0].length) : '';
+    return { amount: parseAmount(text), from: trimEdges(from), to: trimEdges(to) };
+  }
+
+  if (fromIdx > keIdx) {
+    // Reversed "ke <y> dari <x>" (T-2 variation 2).
+    const to = text.slice(keIdx + keMatch[0].length, fromIdx);
+    const from = text.slice(fromIdx + dariMatch[0].length);
+    return { amount: parseAmount(text), from: trimEdges(from), to: trimEdges(to) };
+  }
+
+  // ke-only (T-2 variations 4/5): the destination sits after 'ke'; the
+  // message's own leftover BEFORE it - minus the verb, the money tokens
+  // and filler words - is an implicit source ("geser 500rb BCA ke BSI" ->
+  // from 'BCA'). Empty leftover = the missing side the handler asks for.
+  const to = text.slice(keIdx + keMatch[0].length);
+  const leftover = stripMoneyTokens(text.slice(0, keIdx))
+    .replace(TRANSFER_VERB_GLOBAL_PATTERN, ' ')
+    .replace(/\b(?:yang|dong|donk|ya|nih|aja|semua|semuanya|rp)\b/gi, ' ');
+  return { amount: parseAmount(text), from: trimEdges(leftover), to: trimEdges(to) };
+}
+
+/**
+ * V2 T-5: is this reply JUST an amount ("500rb", "500000", "Rp500.000")?
+ * The pending-transfer amount gate claims only this shape, so a bare
+ * number completes the transfer while "jajan 20rb" (a real transaction
+ * sentence) still falls through to ordinary recording. Pure.
+ */
+export function parseAmountOnlyReply(rawText) {
+  const trimmed = String(rawText ?? '').trim();
+  if (!/^(?:rp\.?\s*)?\d[\d.,]*(?:\s*(?:rb|ribu|rebu|k|jt|juta))?[.!?,]*$/i.test(trimmed)) {
+    return null;
+  }
+  const amount = parseAmount(trimmed);
+  return amount !== null && amount > 0 ? amount : null;
+}
+
+/**
+ * V2 T-3/T-4: the wallet-name half of an endpoint reply - "dari BCA" /
+ * "ke Mandiri." / "yang BSI" -> "BCA" / "Mandiri" / "BSI". Returns null
+ * when nothing name-shaped remains (no letters, too long/wordy, or the
+ * remainder is transfer-verb text). Case is preserved - every matcher
+ * downstream is case-insensitive. The marker lead-ins require a following
+ * space so a wallet name that merely STARTS with "ke"/"dari" ("Kebun
+ * Baru") is never mangled. Pure.
+ */
+export function extractEndpointAnswerCandidate(rawText) {
+  let s = String(rawText ?? '').trim().replace(/[?!.]+$/g, '');
+  s = s.replace(/^(?:yang\s+)?(?:(?:dari|ke)\s+)?(?:(?:dompet|wallet)\s+)?/i, '');
+  s = stripMoneyTokens(s);
+  s = s.replace(/[^\p{L}\p{N}&]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length < 2 || s.length > 40) return null;
+  if (s.split(' ').length > 4) return null;
+  if (!/\p{L}/u.test(s)) return null;
+  if (TRANSFER_VERB_PATTERN.test(s)) return null;
+  // Sentence openers are questions/interjections, never a wallet name -
+  // "gimana" must re-ask, not get stored as a bogus endpoint (see the
+  // W-4 opener set above).
+  if (NON_NAME_OPENERS.has(s.split(' ')[0].toLowerCase())) return null;
+  return s;
 }
 
 const EDIT_VERB_PATTERN = /\b(ubah|edit|rubah|ganti)\b/;
@@ -3280,8 +3571,26 @@ async function resolveWalletIdForWrite(userId, rawName, trace) {
   }
 }
 
-/** The only handler that calls Gemini extraction. */
-async function handleTransactionIntent(user, rawText, trace) {
+/**
+ * The only handler that calls Gemini extraction.
+ *
+ * V2 Phase 3 pre-check (T-2/T-3, CR-2): before ANY extraction work, a
+ * transfer-shaped message (dedicated verb + at least one endpoint marker;
+ * weak verbs additionally need an amount) is diverted to the transfer
+ * handler. That is where a one-marker message gets its missing endpoint
+ * asked (when the provided side IS one of the caller's own wallets) or
+ * fails open to this ordinary path (person-transfer shape - outcome
+ * unchanged, SPEC 2.6). detectIntent itself still requires BOTH markers
+ * (isTransferRequest), so the pinned routing contract in
+ * test/unit/sprintD4Routing.test.js stays green. `opts.transferPreChecked`
+ * stops the fail-open call below from looping back into the pre-check.
+ */
+async function handleTransactionIntent(user, rawText, trace, opts = {}) {
+  if (!opts.transferPreChecked && isTransferShapedMessage(rawText)) {
+    trace.transferShape = 'precheck';
+    return handleTransferIntent(user, rawText, trace);
+  }
+
   const pendingContext = await contextDomain.getPendingContext(user.id);
   trace.pendingContextBefore = pendingContext;
 
@@ -3332,8 +3641,13 @@ async function handleTransactionIntent(user, rawText, trace) {
     // Guard: an explicit null amount in a correction would try to null out
     // an existing NOT NULL column on update. Keep the existing amount
     // instead of blanking it if the model didn't actually give a new one.
+    // V2 G9: a zero/negative/non-finite amount is just as bogus as a null
+    // one - never overwrite a real amount with garbage (GC-1: no invented
+    // numbers).
     const correctionAmount =
-      typeof extraction.amount === 'number' && !Number.isNaN(extraction.amount)
+      typeof extraction.amount === 'number' &&
+      Number.isFinite(extraction.amount) &&
+      extraction.amount > 0
         ? extraction.amount
         : lastTransaction.amount;
 
@@ -3372,8 +3686,14 @@ async function handleTransactionIntent(user, rawText, trace) {
   // here the message reached this point with a confident, non-ambiguous
   // type - just genuinely no number stated (e.g. "bayar netflix"). Rather
   // than crash on the NOT NULL constraint, ask for the amount explicitly.
+  // V2 G9 (GC-1): the check is amount > 0 AND finite - a zero/negative/
+  // non-finite extraction amount is garbage, never a real transaction, so
+  // it records NOTHING and re-asks like the missing case instead of
+  // inserting a fabricated row.
   const hasValidExtractionAmount =
-    typeof extraction.amount === 'number' && !Number.isNaN(extraction.amount);
+    typeof extraction.amount === 'number' &&
+    Number.isFinite(extraction.amount) &&
+    extraction.amount > 0;
   if (!hasValidExtractionAmount) {
     return {
       reply: `Oke, ${extraction.description || 'ini'} berapa ya nominalnya?`,
@@ -3408,107 +3728,236 @@ async function handleTransactionIntent(user, rawText, trace) {
 }
 
 /**
- * Sprint D4 (D4 Transfer): the ONLY intent that writes type='transfer'.
+ * V2 Phase 3 (UX contract T-2..T-5, CR-2, QA note 2): the ONLY intent that
+ * writes type='transfer', now also owning every CLARIFICATION round.
  *
- * The shape is strict (parseTransferCommand: dedicated verb + mandatory
- * "dari"/"ke" markers, dari before ke) and both endpoint names resolve
- * STRICTLY against the caller's ACTIVE wallets (findActiveWalletExact -
- * never the silent default fallback). Everything that cannot be pinned
- * down - an unparseable shape, an unknown/archived/empty name, a
- * degraded database, a write-time race - FAILS OPEN to ordinary
- * transaction recording (approved D4 fail-open decision): the message is
- * recorded or clarified by the existing extraction path rather than
- * dropped, per SPECIFICATION.md section 1.5. The only outcomes that
- * answer directly are the two the grammar itself owns: no amount yet
- * (ask for it) and both endpoints resolving to the SAME wallet (nothing
- * would move). Both stay in IDLE - no new state and no confirmation
- * step (approved D4 decision); deletion later uses the Sprint C flow
- * untouched.
+ * Grammar v2 parses one-sided and reversed shapes (parseTransferCommand),
+ * and the routing rules are:
+ *   - both sides present + both resolve STRICTLY against the caller's own
+ *     ACTIVE wallets (findActiveWalletExact - never a default fallback):
+ *     same-wallet guard, then execute (the original D4 path, byte-identical
+ *     replies). A write-time race / degraded DB still FAILS OPEN to
+ *     ordinary recording (T-10 keeps that D4 decision).
+ *   - both markers ("dari" AND "ke") but a side missing or unresolvable:
+ *     CLARIFY - ask only for that one side with a candidate list (T-3/T-4,
+ *     CR-2: never silently fall open to an expense). The unknown side's
+ *     name is echoed back when it failed to resolve.
+ *   - ONE marker only, and the provided side does not resolve (or nothing
+ *     is provided at all): this is the person-transfer shape ("transfer ke
+ *     andi 500rb", SPEC 2.6) - FAIL OPEN to the ordinary extraction /
+ *     AWAITING_DIRECTION flow exactly as before, outcome unchanged.
+ *   - no amount yet: ask with the byte-identical TRANSFER_ASK_AMOUNT_REPLY
+ *     and HOLD the sides in a pendingTransfer context whose TTL is
+ *     CONTEXT_WINDOW_MINUTES (QA note 1: a clarification context must
+ *     expire, never dangle). The follow-up answer completes the transfer;
+ *     anything else (a strong intent, an expired window) falls through to
+ *     normal routing - no state, no trap (T-5 "no state stuck").
  *
- * Also deliberately does NOT set pending context: a transfer row is
- * never the anchor for a later "yang tadi" correction (its category and
- * endpoints are fixed by design - see applyEdit), so a correction can
- * never clobber it.
+ * Deliberately still does NOT set pendingContext (the "yang tadi"
+ * correction anchor): a transfer row's category and endpoints are fixed by
+ * design (see applyEdit), so a correction can never clobber it.
+ *
+ * All replies on this path are static/deterministic (GC-6) and built from
+ * backend facts only (GC-1); trace carries intent/outcome/endpoints for
+ * GC-9.
  */
+
+/** ISO expiry timestamp for a pending clarification (contextDomain window). */
+function pendingClarificationExpiresAt() {
+  const minutes = contextDomain.getContextWindowMinutes();
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+/** The stored state_context entry that carries an unfinished clarification. */
+function pendingTransferContext(shape, missing, unknownName, bothMarkers) {
+  const ctx = {
+    amount: typeof shape.amount === 'number' && shape.amount > 0 ? shape.amount : null,
+    from: shape.from ?? '',
+    to: shape.to ?? '',
+    missing,
+    bothMarkers: !!bothMarkers,
+    expiresAt: pendingClarificationExpiresAt(),
+  };
+  if (unknownName) ctx.unknownName = unknownName;
+  return ctx;
+}
+
+/**
+ * T-3/T-4 ask: the missing endpoint question first (contract copy), then
+ * the caller's own active wallets as a pick list, one closing instruction,
+ * and - only for the unknown-name case - the create hint (T-4: "or offers
+ * to create"). Never a help menu (GC-2).
+ */
+function buildTransferEndpointAskReply(missing, activeWallets, unknownName) {
+  const ask = missing === 'to' ? TRANSFER_ASK_TO_PREFIX : TRANSFER_ASK_FROM_PREFIX;
+  const unknown = unknownName ? `Aku nggak nemu dompet "${unknownName}".\n\n` : '';
+  const list = activeWallets.length
+    ? `\n\n${formatWalletNameLines(activeWallets, 5)}\n\n${TRANSFER_CANDIDATE_HINT_REPLY}`
+    : `\n\n${WALLET_CREATE_FIRST_REPLY}`;
+  const createHint = unknownName && activeWallets.length ? `\n\n${TRANSFER_CREATE_HINT_REPLY}` : '';
+  return `${unknown}${ask}${list}${createHint}`;
+}
+
+async function askTransferEndpoint(user, shape, missing, unknownName, bothMarkers, rawText, trace) {
+  let wallets;
+  try {
+    wallets = await walletsDomain.listActiveWallets(user.id);
+  } catch (error) {
+    // Listing the candidates failed (degraded DB): fail open so the
+    // message is still recorded/clarified by the ordinary path (T-10).
+    trace.transferResolution = 'degraded';
+    trace.transferResolutionError = error?.message ?? String(error);
+    return handleTransactionIntent(user, rawText, trace, { transferPreChecked: true });
+  }
+
+  trace.transferOutcome = unknownName ? 'endpoint_unknown' : 'awaiting_endpoint';
+  trace.transferMissing = missing;
+  return {
+    reply: buildTransferEndpointAskReply(missing, wallets, unknownName),
+    newState: STATES.IDLE,
+    newStateContext: {
+      pendingTransfer: pendingTransferContext(shape, missing, unknownName, bothMarkers),
+    },
+  };
+}
+
+/**
+ * The unified shape processor: every transfer round (fresh parse AND a
+ * pending-clarification continuation) runs through here.
+ */
+async function runTransferShape(user, shape, rawText, trace, opts = {}) {
+  const bothMarkers = opts.bothMarkers ?? (() => {
+    const lower = String(rawText ?? '').toLowerCase();
+    return containsWord(lower, 'dari') && containsWord(lower, 'ke');
+  })();
+  const fromPending = opts.fromPending === true;
+
+  trace.transferEndpoints = { from: shape.from ?? '', to: shape.to ?? '' };
+
+  // --- no amount yet: ask, and HOLD the sides for the window (T-5) --------
+  if (!(typeof shape.amount === 'number' && shape.amount > 0)) {
+    trace.transferOutcome = 'missing_amount';
+    return {
+      reply: TRANSFER_ASK_AMOUNT_REPLY,
+      newState: STATES.IDLE,
+      newStateContext: {
+        pendingTransfer: pendingTransferContext(shape, 'amount', null, bothMarkers),
+      },
+    };
+  }
+
+  const hasFrom = typeof shape.from === 'string' && shape.from !== '';
+  const hasTo = typeof shape.to === 'string' && shape.to !== '';
+
+  if (!hasFrom && !hasTo) {
+    // Defensive: a marker matched but neither side carried a name.
+    trace.transferOutcome = 'unparseable';
+    return handleTransactionIntent(user, rawText, trace, { transferPreChecked: true });
+  }
+
+  // --- resolve what the message DID provide (strict, active only) --------
+  let from = null;
+  let to = null;
+  try {
+    if (hasFrom) from = await walletsDomain.findActiveWalletExact(user.id, shape.from);
+    if (hasTo) to = await walletsDomain.findActiveWalletExact(user.id, shape.to);
+  } catch (error) {
+    // Resolution degraded - fail open, same principle as
+    // resolveWalletIdForWrite (T-10 keeps the D4 fail-open).
+    trace.transferResolution = 'degraded';
+    trace.transferResolutionError = error?.message ?? String(error);
+    return handleTransactionIntent(user, rawText, trace, { transferPreChecked: true });
+  }
+  const fromResolved = hasFrom && !!from;
+  const toResolved = hasTo && !!to;
+
+  // --- full command: same-wallet guard, then execute (original D4 path) --
+  if (fromResolved && toResolved) {
+    if (from.id === to.id) {
+      trace.transferOutcome = 'same_wallet';
+      return { reply: TRANSFER_SAME_WALLET_REPLY, newState: STATES.IDLE, newStateContext: {} };
+    }
+
+    let result;
+    try {
+      result = await transfersDomain.createTransfer(user.id, {
+        amount: shape.amount,
+        fromWalletId: from.id,
+        toWalletId: to.id,
+        rawText,
+        sourceMessageId: generateLocalMessageId(),
+      });
+    } catch (error) {
+      // Write failed (e.g. a database where migration
+      // 20261002090000_add_transfers has not been applied yet): fail open so
+      // the message still gets recorded as an ordinary transaction instead
+      // of crashing the pipeline (SPECIFICATION.md section 1.5).
+      trace.transferWrite = 'degraded';
+      trace.transferWriteError = error?.message ?? String(error);
+      return handleTransactionIntent(user, rawText, trace, { transferPreChecked: true });
+    }
+
+    if (result.status !== 'created') {
+      trace.transferOutcome = result.status;
+      if (result.status === 'invalid_amount') {
+        return { reply: TRANSFER_ASK_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
+      }
+      // Commit-time race (an endpoint archived/deleted between resolve and
+      // insert) or a defensive missing endpoint: fall open, never drop.
+      return handleTransactionIntent(user, rawText, trace, { transferPreChecked: true });
+    }
+
+    trace.transferOutcome = 'created';
+    trace.dbAction = {
+      type: 'insert_transfer',
+      transaction: result.transaction,
+      from: from.name,
+      to: to.name,
+    };
+    return {
+      reply: `Oke, ${formatRupiah(result.transaction.amount)} udah dipindah dari ${from.name} ke ${to.name} 👍`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+
+  // --- not fully resolvable: clarify, fail open, or ask -------------------
+  if (!bothMarkers && !fromPending) {
+    // ONE marker only (or the ke-only/dari-only residue): the provided
+    // side must be one of the caller's own wallets or this is not a
+    // wallet-transfer at all - person-transfer shape ("transfer ke andi
+    // 500rb", SPEC 2.6). Fail open to ordinary extraction: outcome exactly
+    // as before V2 (direction ask / recording), never a silent wrong write.
+    const providedResolved = hasFrom ? fromResolved : hasTo ? toResolved : false;
+    if (!providedResolved) {
+      trace.transferOutcome = 'endpoint_unresolved';
+      return handleTransactionIntent(user, rawText, trace, { transferPreChecked: true });
+    }
+    const missing = hasFrom ? 'to' : 'from';
+    return askTransferEndpoint(user, shape, missing, null, bothMarkers, rawText, trace);
+  }
+
+  // Both markers present, or a continuation of an earlier ask: ask about
+  // the first side that is missing or unresolvable - destination first.
+  let missing;
+  let unknownName = null;
+  if (!hasTo || !toResolved) {
+    missing = 'to';
+    unknownName = hasTo ? shape.to : null;
+  } else {
+    missing = 'from';
+    unknownName = hasFrom ? shape.from : null;
+  }
+  return askTransferEndpoint(user, shape, missing, unknownName, bothMarkers, rawText, trace);
+}
+
 async function handleTransferIntent(user, rawText, trace) {
   const command = parseTransferCommand(rawText);
   if (!command) {
     trace.transferOutcome = 'unparseable';
-    return handleTransactionIntent(user, rawText, trace);
+    return handleTransactionIntent(user, rawText, trace, { transferPreChecked: true });
   }
-
-  if (!(typeof command.amount === 'number' && command.amount > 0)) {
-    trace.transferOutcome = 'missing_amount';
-    return { reply: TRANSFER_ASK_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
-  }
-
-  let from;
-  let to;
-  try {
-    from = await walletsDomain.findActiveWalletExact(user.id, command.from);
-    to = await walletsDomain.findActiveWalletExact(user.id, command.to);
-  } catch (error) {
-    // Degraded mode, same principle as resolveWalletIdForWrite: wallet
-    // resolution must never block recording - fall open to extraction.
-    trace.transferResolution = 'degraded';
-    trace.transferResolutionError = error?.message ?? String(error);
-    return handleTransactionIntent(user, rawText, trace);
-  }
-
-  if (!from || !to) {
-    // Unknown or archived name (person-transfers like "transfer dari andi
-    // ke budi" land here on purpose) - record it the ordinary way.
-    trace.transferOutcome = 'endpoint_unresolved';
-    trace.transferEndpoints = { from: command.from, to: command.to };
-    return handleTransactionIntent(user, rawText, trace);
-  }
-
-  if (from.id === to.id) {
-    trace.transferOutcome = 'same_wallet';
-    return { reply: TRANSFER_SAME_WALLET_REPLY, newState: STATES.IDLE, newStateContext: {} };
-  }
-
-  let result;
-  try {
-    result = await transfersDomain.createTransfer(user.id, {
-      amount: command.amount,
-      fromWalletId: from.id,
-      toWalletId: to.id,
-      rawText,
-      sourceMessageId: generateLocalMessageId(),
-    });
-  } catch (error) {
-    // Write failed (e.g. a database where migration
-    // 20261002090000_add_transfers has not been applied yet): fail open so
-    // the message still gets recorded as an ordinary transaction instead
-    // of crashing the pipeline (SPECIFICATION.md section 1.5).
-    trace.transferWrite = 'degraded';
-    trace.transferWriteError = error?.message ?? String(error);
-    return handleTransactionIntent(user, rawText, trace);
-  }
-
-  if (result.status !== 'created') {
-    trace.transferOutcome = result.status;
-    if (result.status === 'invalid_amount') {
-      return { reply: TRANSFER_ASK_AMOUNT_REPLY, newState: STATES.IDLE, newStateContext: {} };
-    }
-    // Commit-time race (an endpoint archived/deleted between resolve and
-    // insert) or a defensive missing endpoint: fall open, never drop.
-    return handleTransactionIntent(user, rawText, trace);
-  }
-
-  trace.dbAction = {
-    type: 'insert_transfer',
-    transaction: result.transaction,
-    from: from.name,
-    to: to.name,
-  };
-
-  return {
-    reply: `Oke, ${formatRupiah(result.transaction.amount)} udah dipindah dari ${from.name} ke ${to.name} 👍`,
-    newState: STATES.IDLE,
-    newStateContext: {},
-  };
+  return runTransferShape(user, command, rawText, trace);
 }
 
 // ---------------------------------------------------------------------------
@@ -4964,21 +5413,103 @@ async function handleAwaitingCategoryConfirm(user, rawText, trace) {
 // ---------------------------------------------------------------------------
 
 /**
- * EXACT (case-insensitive) resolution of a manage-command target against
- * the user's OWN wallets (active AND archived - an archived wallet can
- * still be renamed, restored, or deleted). Deliberately NOT the fuzzy
- * resolveWallet: a destructive action must never fire on a prefix
- * collision ("BRI" vs "BRI Syariah"), and inference fallbacks belong to
- * transaction recording, not to management commands.
- * Returns { kind: 'wallet', row } | { kind: 'not_found', name } | { kind: 'empty' }.
+ * V2 W-8 resolution of a manage-command target against the user's OWN
+ * wallets (active AND archived - an archived wallet can still be renamed,
+ * restored, or deleted), in tiers:
+ *
+ *   1. EXACT (case-insensitive) - the only tier DELETE uses (W-7 keep: a
+ *      destructive action must never fire on a near match), and the first
+ *      tier for everything else.
+ *   2. fuzzy (options.fuzzy, set by rename/archive/unarchive): plausible
+ *      matches by containment on a normalized form (bidirectional - "bsi"
+ *      -> "BSI Syariah", "bca syariah" -> "BCA"), then edit distance for
+ *      typos (<=1 edit for >=4 typed chars, <=2 for >=8; shorter needles
+ *      never fuzzy-match - a 3-char edit distance 1 is a different wallet).
+ *
+ * Returns { kind: 'wallet', row } | { kind: 'candidates', name, rows<=3 }
+ * | { kind: 'not_found', name } | { kind: 'empty' }. One plausible match
+ * resolves; 2+ asks the user which one (never a guess - prefix collisions
+ * like "BRI" vs "BRI Syariah" stay safe); bare NOT_FOUND only when ZERO
+ * matches are plausible (W-8).
  */
-async function resolveWalletForManage(userId, rawName) {
+async function resolveWalletForManage(userId, rawName, options = {}) {
   const name = walletsDomain.normalizeWalletName(rawName);
   if (!name) return { kind: 'empty' };
   const wallets = await walletsDomain.listWallets(userId);
-  const row = wallets.find((w) => w.name.toLowerCase() === name.toLowerCase());
-  if (row) return { kind: 'wallet', row };
+
+  const exact = wallets.find((w) => w.name.toLowerCase() === name.toLowerCase());
+  if (exact) return { kind: 'wallet', row: exact };
+  if (!options.fuzzy) return { kind: 'not_found', name };
+
+  const plausible = plausibleWalletMatches(wallets, name);
+  if (plausible.length === 1) return { kind: 'wallet', row: plausible[0] };
+  if (plausible.length >= 2) return { kind: 'candidates', name, rows: plausible.slice(0, 3) };
   return { kind: 'not_found', name };
+}
+
+/** Same shape as extractEndpointAnswerCandidate: letters/digits/& only. */
+function walletNameTight(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}&]+/gu, ' ')
+    .trim();
+}
+
+/**
+ * W-8 tier 2+3: containment first (returns immediately when anything
+ * contains), then bounded edit distance. Dedupes across tiers by wallet id.
+ */
+function plausibleWalletMatches(wallets, name) {
+  const needle = walletNameTight(name);
+  if (!needle) return [];
+  const matches = [];
+  const seen = new Set();
+  const add = (wallet) => {
+    if (!seen.has(wallet.id)) {
+      seen.add(wallet.id);
+      matches.push(wallet);
+    }
+  };
+
+  for (const wallet of wallets) {
+    const w = walletNameTight(wallet.name);
+    if (w && (w.includes(needle) || needle.includes(w))) add(wallet);
+  }
+  if (matches.length > 0) return matches;
+
+  const limit = needle.length >= 8 ? 2 : needle.length >= 4 ? 1 : 0;
+  if (!limit) return matches;
+  for (const wallet of wallets) {
+    const w = walletNameTight(wallet.name);
+    if (w && levenshteinWithin(needle, w, limit)) add(wallet);
+  }
+  return matches;
+}
+
+/** Levenshtein distance <= max (classic DP with a per-row cutoff). */
+function levenshteinWithin(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return false;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+      if (curr[j] < rowMin) rowMin = curr[j];
+    }
+    if (rowMin > max) return false;
+    prev = curr;
+  }
+  return prev[b.length] <= max;
+}
+
+/** W-8 ambiguity reply: question + <=3 candidates + one resend instruction. */
+function buildWalletManageCandidatesReply(rows) {
+  return (
+    `${WALLET_CANDIDATES_PREFIX_REPLY}\n\n${formatWalletNameLines(rows, 3)}\n\n` +
+    WALLET_MANAGE_CANDIDATES_HINT_REPLY
+  );
 }
 
 async function runWalletCreate(user, parsed, trace) {
@@ -4994,9 +5525,26 @@ async function runWalletCreate(user, parsed, trace) {
   if (result.status === 'created') {
     trace.dbAction = { type: 'insert_wallet', wallet: result.wallet };
     return {
-      reply: `Oke, dompet "${result.wallet.name}" udah kubikin 👍`,
+      // V2 Phase 4 (UX contract W-2, brief §8 Create): pinned copy that
+      // states the Rp0 result AND hands straight into the W-3 Journey B
+      // follow-up below ("Mau isi saldo awal sekarang?"). No blocking
+      // question before the write (W-2: "no blocking question").
+      reply:
+        `✅ Wallet ${result.wallet.name} berhasil dibuat. Saldo awal: ${formatRupiah(0)}.\n\n` +
+        'Mau isi saldo awal sekarang?',
       newState: STATES.IDLE,
-      newStateContext: {},
+      // V2 W-3 Journey B (QA note 1): a TTL'd hint so the direct
+      // follow-up "saldo awal 500rb" knows WHICH wallet it belongs to -
+      // and expires on its own so the context can never dangle. Any
+      // later flow that stores its own context replaces this wholesale;
+      // either way it is bounded by expiresAt.
+      newStateContext: {
+        pendingOpeningBalance: {
+          walletId: result.wallet.id,
+          walletName: result.wallet.name,
+          expiresAt: pendingClarificationExpiresAt(),
+        },
+      },
     };
   }
   if (result.status === 'invalid_name') {
@@ -5005,10 +5553,37 @@ async function runWalletCreate(user, parsed, trace) {
   if (result.status === 'invalid_type') {
     return { reply: WALLET_INVALID_TYPE_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
-  // duplicate - including a unique-index race caught at insert time
+  // duplicate - including a unique-index race caught at insert time.
+  //
+  // V2 Phase 4 (UX contract W-5, brief §8 Existing): a duplicate create is
+  // NEVER silent and reports what already sits in that name - the reply
+  // carries the existing wallet's CURRENT balance, read from the same
+  // backend fold as every other balance (GC-1: fact-grounded, zero AI).
+  // The domain duplicate check is case-insensitive and counts archived
+  // rows, so this lookup mirrors both (archived flagged like W-4 does).
+  // If the balance read degrades, fall back to the balance-less duplicate
+  // reply - still never silent, and never a number the backend produced.
   const name = walletsDomain.normalizeWalletName(parsed.name) || parsed.name;
+  let existing = null;
+  try {
+    const wallets = await walletsDomain.listWalletsWithDetails(user.id);
+    existing =
+      wallets.find((w) => (w.name ?? '').toLowerCase() === name.toLowerCase()) ?? null;
+  } catch {
+    existing = null;
+  }
+  if (!existing) {
+    return {
+      reply: `Udah ada dompet "${name}" nih. Coba nama lain ya.`,
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
+  const archivedFlag = existing.archived_at ? ' (lagi diarsipkan)' : '';
   return {
-    reply: `Udah ada dompet "${name}" nih. Coba nama lain ya.`,
+    reply:
+      `Wallet ${existing.name}${archivedFlag} ternyata udah ada. Saldo sekarang ${formatRupiah(existing.balance ?? 0)}.\n\n` +
+      'Kalau maksud lo mau bikin wallet lain, kasih nama wallet-nya aja.',
     newState: STATES.IDLE,
     newStateContext: {},
   };
@@ -5019,11 +5594,24 @@ async function runWalletRename(user, parsed, trace) {
     return { reply: WALLET_RENAME_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
 
-  const resolution = await resolveWalletForManage(user.id, parsed.oldName);
+  const resolution = await resolveWalletForManage(user.id, parsed.oldName, { fuzzy: true });
   if (resolution.kind === 'empty') {
     return { reply: WALLET_RENAME_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
+  if (resolution.kind === 'candidates') {
+    // W-8: ambiguous plausible names - ask which one, write NOTHING.
+    trace.walletOutcome = 'candidates';
+    trace.walletCandidates = resolution.rows.map((w) => w.name);
+    return {
+      reply: buildWalletManageCandidatesReply(resolution.rows),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
   if (resolution.kind !== 'wallet') {
+    // GC-9: the failure category stays observable on the trace (reply is
+    // the pinned NOT_FOUND copy in every caller).
+    trace.walletOutcome = 'not_found';
     return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
 
@@ -5067,11 +5655,24 @@ async function runWalletArchive(user, parsed, trace) {
     return { reply: WALLET_ARCHIVE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
 
-  const resolution = await resolveWalletForManage(user.id, parsed.name);
+  const resolution = await resolveWalletForManage(user.id, parsed.name, { fuzzy: true });
   if (resolution.kind === 'empty') {
     return { reply: WALLET_ARCHIVE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
+  if (resolution.kind === 'candidates') {
+    // W-8: ambiguous plausible names - ask which one, write NOTHING.
+    trace.walletOutcome = 'candidates';
+    trace.walletCandidates = resolution.rows.map((w) => w.name);
+    return {
+      reply: buildWalletManageCandidatesReply(resolution.rows),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
   if (resolution.kind !== 'wallet') {
+    // GC-9: the failure category stays observable on the trace (reply is
+    // the pinned NOT_FOUND copy in every caller).
+    trace.walletOutcome = 'not_found';
     return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
 
@@ -5102,11 +5703,24 @@ async function runWalletUnarchive(user, parsed, trace) {
     return { reply: WALLET_UNARCHIVE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
 
-  const resolution = await resolveWalletForManage(user.id, parsed.name);
+  const resolution = await resolveWalletForManage(user.id, parsed.name, { fuzzy: true });
   if (resolution.kind === 'empty') {
     return { reply: WALLET_UNARCHIVE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
+  if (resolution.kind === 'candidates') {
+    // W-8: ambiguous plausible names - ask which one, write NOTHING.
+    trace.walletOutcome = 'candidates';
+    trace.walletCandidates = resolution.rows.map((w) => w.name);
+    return {
+      reply: buildWalletManageCandidatesReply(resolution.rows),
+      newState: STATES.IDLE,
+      newStateContext: {},
+    };
+  }
   if (resolution.kind !== 'wallet') {
+    // GC-9: the failure category stays observable on the trace (reply is
+    // the pinned NOT_FOUND copy in every caller).
+    trace.walletOutcome = 'not_found';
     return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
 
@@ -5137,6 +5751,9 @@ async function runWalletDelete(user, parsed, trace) {
     return { reply: WALLET_DELETE_ASK_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
   if (resolution.kind !== 'wallet') {
+    // GC-9: the failure category stays observable on the trace (reply is
+    // the pinned NOT_FOUND copy in every caller).
+    trace.walletOutcome = 'not_found';
     return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
   }
 
@@ -5187,6 +5804,17 @@ async function handleWalletManageIntent(user, rawText, trace) {
   if (parsed.action === 'unarchive') return runWalletUnarchive(user, parsed, trace);
   if (parsed.action === 'delete') return runWalletDelete(user, parsed, trace);
 
+  // V2 W-4: a semantic existence question ("BSI ada belum?") names no
+  // container word, so the manage parser above never sees it - answered
+  // from backend facts, never 'unclear' (gap G7).
+  const existence = parseWalletExistenceMessage(rawText);
+  if (existence) return runWalletExistence(user, existence, trace);
+
+  // V2 W-3 (DEC-2, Journey B): "saldo awal 500rb" - a wallet write with
+  // its own flow (TTL'd hint right after create, candidate list otherwise).
+  const opening = parseOpeningBalanceMessage(rawText);
+  if (opening) return runWalletOpeningBalance(user, opening, trace);
+
   // Phase 2 (Priority 4) + P2-A: a LIST/STATUS request ("ada dompet apa
   // ja?", "berapa saldo BRI?", "BRI gue saldonya berapa?") answers with the
   // real wallets and their real balances - that wallet when the message
@@ -5206,6 +5834,140 @@ async function handleWalletManageIntent(user, rawText, trace) {
   }
 
   return { reply: WALLET_USAGE_HELP_REPLY, newState: STATES.IDLE, newStateContext: {} };
+}
+
+// ---------------------------------------------------------------------------
+// V2 Phase 3 wallet handlers (W-4 existence read, W-3 opening balance).
+// Same conventions as every block in this file: static replies (GC-6),
+// facts straight from the domain layer (GC-1), state_context entries always
+// carry an explicit expiresAt (QA note 1), trace fields for GC-9.
+// ---------------------------------------------------------------------------
+
+/** W-4: existence answered with backend facts only. */
+async function runWalletExistence(user, message, trace) {
+  trace.walletOutcome = 'existence_read';
+
+  let wallets;
+  try {
+    wallets = await walletsDomain.listWalletsWithDetails(user.id);
+  } catch (error) {
+    trace.walletReadError = error?.message ?? String(error);
+    return { reply: WALLET_READ_DEGRADED_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const target = matchWalletForRead(wallets, message.name);
+  trace.walletReadTarget = target ? target.name : message.name;
+  if (!target) {
+    return { reply: WALLET_EXIST_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  const archived = target.archived_at ? ' (lagi diarsipkan)' : '';
+  return {
+    reply:
+      `Wallet ${target.name} ternyata udah ada${archived}. Saldo sekarang ${formatRupiah(target.balance ?? 0)}.\n\n` +
+      'Mau bikin wallet lain?',
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+/** The W-3 candidate ask: destination question + active pick list. */
+function buildOpeningAskReply(activeWallets) {
+  if (activeWallets.length === 0) return WALLET_CREATE_FIRST_REPLY;
+  return (
+    `Mau diatur ke dompet mana?\n\n${formatWalletNameLines(activeWallets, 5)}\n\n` +
+    WALLET_CANDIDATES_HINT_REPLY
+  );
+}
+
+async function askOpeningBalanceCandidate(user, amount, activeWallets, trace, reason) {
+  trace.openingBalanceAsk = reason;
+  if (activeWallets.length === 0) {
+    return { reply: WALLET_CREATE_FIRST_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  return {
+    reply: buildOpeningAskReply(activeWallets),
+    newState: STATES.IDLE,
+    // The ONLY wallet write whose target is not in the message itself -
+    // so it carries a TTL'd window (QA note 1), never a dangling context.
+    newStateContext: {
+      pendingOpeningBalance: { amount, expiresAt: pendingClarificationExpiresAt() },
+    },
+  };
+}
+
+/** Applies the opening balance (DEC-2) - shared by router path + gate. */
+async function applyOpeningBalance(user, target, amount, trace) {
+  let result;
+  try {
+    result = await walletsDomain.setOpeningBalance(user.id, target.id, amount);
+  } catch (error) {
+    // Pre-migration column / degraded DB: honest friendly failure, never a
+    // crash and never a fabricated success (GC-4/GC-5).
+    trace.openingBalanceError = error?.message ?? String(error);
+    return { reply: WALLET_OPENING_SAVE_FAILED_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  trace.openingBalanceResult = result.status;
+  if (result.status !== 'set') {
+    if (result.status === 'archived') {
+      return { reply: WALLET_OPENING_ARCHIVED_REPLY, newState: STATES.IDLE, newStateContext: {} };
+    }
+    if (result.status === 'not_found') {
+      return { reply: WALLET_NOT_FOUND_REPLY, newState: STATES.IDLE, newStateContext: {} };
+    }
+    return { reply: WALLET_OPENING_SAVE_FAILED_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+
+  trace.dbAction = { type: 'set_opening_balance', wallet: target.name, amount };
+  return {
+    reply: `Oke, saldo awal ${target.name} diset ${formatRupiah(amount)} 👍`,
+    newState: STATES.IDLE,
+    newStateContext: {},
+  };
+}
+
+/**
+ * W-3 router path: target priority is explicit name in the message >
+ * the TTL'd just-created hint > ask which wallet (candidate list). The
+ * hint is consumed here (never a bare dangling flag - QA note 1).
+ */
+async function runWalletOpeningBalance(user, message, trace) {
+  trace.walletOutcome = 'opening_balance';
+  trace.openingBalanceAmount = message.amount;
+
+  let wallets;
+  try {
+    wallets = await walletsDomain.listWallets(user.id);
+  } catch (error) {
+    trace.walletReadError = error?.message ?? String(error);
+    return { reply: WALLET_READ_DEGRADED_REPLY, newState: STATES.IDLE, newStateContext: {} };
+  }
+  const active = wallets.filter((wallet) => !wallet.archived_at);
+
+  if (message.walletName) {
+    const target = matchWalletForRead(wallets, message.walletName);
+    if (!target) return askOpeningBalanceCandidate(user, message.amount, active, trace, 'unknown_wallet');
+    if (target.archived_at) {
+      trace.openingBalanceResult = 'archived';
+      return { reply: WALLET_OPENING_ARCHIVED_REPLY, newState: STATES.IDLE, newStateContext: {} };
+    }
+    return applyOpeningBalance(user, target, message.amount, trace);
+  }
+
+  const hint = user.state_context?.pendingOpeningBalance;
+  if (hint && typeof hint.walletId === 'string' && !contextDomain.isContextExpired(hint.expiresAt)) {
+    const target = active.find((wallet) => wallet.id === hint.walletId) ?? null;
+    if (target) {
+      trace.walletHint = 'used';
+      return applyOpeningBalance(user, target, message.amount, trace);
+    }
+    trace.walletHint = 'stale'; // wallet gone/archived since create -> ask
+  } else if (hint) {
+    trace.walletHint = 'expired'; // TTL enforced (QA note 1)
+  }
+
+  return askOpeningBalanceCandidate(user, message.amount, active, trace, 'no_context');
 }
 
 /**
@@ -5583,7 +6345,191 @@ export const INTENT_HANDLERS = {
   unclear: handleUnclearIntent,
 };
 
+// ---------------------------------------------------------------------------
+// V2 Phase 3 pending-clarification gates (T-5 transfer amount/endpoint, W-3
+// opening-balance candidates; QA note 1: every pending wallet context
+// carries an explicit expiresAt and can never dangle). They run FIRST in
+// handleIdle - before every narrowing gate - and CLAIM only their own answer
+// shape while the window is open. Anything else falls through: a strong
+// intent, a real transaction or any narrowing store replaces state_context
+// wholesale, so the window dies on a domain switch too. Expired windows are
+// treated as absent. "No state stuck": nothing here ever forces a path, and
+// an unclear-but-unfillable reply re-asks instead of recording anything.
+// ---------------------------------------------------------------------------
+
+/** Claim rules for an unfinished transfer: only the pending question's own
+ * answer shape is taken; strong intents (income/expense/save/goal/help)
+ * fall through to the router untouched. */
+async function handlePendingTransfer(user, rawText, trace) {
+  const pending = user.state_context?.pendingTransfer;
+  if (!pending || typeof pending !== 'object') return null;
+
+  if (contextDomain.isContextExpired(pending.expiresAt)) {
+    trace.transferContext = 'expired';
+    return null; // treated as absent from here on (replaced on next store)
+  }
+
+  const intent = detectIntent(rawText);
+  const markerLead = /^(\s*(?:yang\s+)?)(dari|ke)\s+/i.exec(rawText);
+
+  // --- waiting for the AMOUNT (T-5) ---------------------------------------
+  if (pending.missing === 'amount') {
+    const amount = parseAmountOnlyReply(rawText);
+    if (amount !== null) {
+      trace.transferPending = 'amount_filled';
+      return runTransferShape(
+        user,
+        { amount, from: pending.from ?? '', to: pending.to ?? '' },
+        rawText,
+        trace,
+        { bothMarkers: pending.bothMarkers, fromPending: true },
+      );
+    }
+
+    if (intent === 'unclear') {
+      // A marker-led endpoint answer ("dari BCA") while the amount is what
+      // is missing: fill THAT side and ask for the amount again - nothing
+      // recorded. (Bare text without a marker never fills - it would risk
+      // junk like "gimana" becoming a wallet name.)
+      if (markerLead) {
+        const candidate = extractEndpointAnswerCandidate(rawText);
+        if (candidate) {
+          const shape = {
+            amount: pending.amount ?? null,
+            from: pending.from ?? '',
+            to: pending.to ?? '',
+          };
+          if (markerLead[2].toLowerCase() === 'dari') shape.from = candidate;
+          else shape.to = candidate;
+          trace.transferPending = 'endpoint_filled';
+          return {
+            reply: TRANSFER_ASK_AMOUNT_REPLY,
+            newState: STATES.IDLE,
+            newStateContext: {
+              pendingTransfer: pendingTransferContext(shape, 'amount', null, pending.bothMarkers),
+            },
+          };
+        }
+      }
+      // Unclear and nothing to fill: re-ask, original window kept as-is.
+      return {
+        reply: TRANSFER_ASK_AMOUNT_REPLY,
+        newState: STATES.IDLE,
+        newStateContext: { pendingTransfer: pending },
+      };
+    }
+    return null; // a real transaction / strong intent -> domain switch
+  }
+
+  // --- waiting for an ENDPOINT (T-3 / T-4) --------------------------------
+  const claimable = intent === 'unclear' || (intent === 'transaction' && markerLead !== null);
+  if (!claimable) return null;
+
+  const candidate = extractEndpointAnswerCandidate(rawText);
+  if (!candidate) {
+    if (intent === 'unclear') {
+      // Unfillable unclear reply ("gimana"): re-ask the same side, window
+      // refreshed but still bounded (≤ CONTEXT_WINDOW_MINUTES per store).
+      trace.transferPending = 'reask';
+      return askTransferEndpoint(
+        user,
+        { amount: pending.amount, from: pending.from ?? '', to: pending.to ?? '' },
+        pending.missing === 'from' ? 'from' : 'to',
+        pending.unknownName ?? null,
+        pending.bothMarkers,
+        rawText,
+        trace,
+      );
+    }
+    return null; // marker-led but nothing name-shaped -> ordinary path
+  }
+
+  const shape = {
+    amount: pending.amount ?? null,
+    from: pending.from ?? '',
+    to: pending.to ?? '',
+  };
+  if (markerLead && markerLead[2].toLowerCase() === 'dari') shape.from = candidate;
+  else if (markerLead && markerLead[2].toLowerCase() === 'ke') shape.to = candidate;
+  else if (pending.missing === 'from') shape.from = candidate;
+  else shape.to = candidate;
+
+  trace.transferPending = `${pending.missing}_filled`;
+  return runTransferShape(user, shape, rawText, trace, {
+    bothMarkers: pending.bothMarkers,
+    fromPending: true,
+  });
+}
+
+/** Claim rules for the W-3 "which wallet?" window. A bare wallet name (or
+ * any name-shaped unclear reply) is applied; a strong intent falls through
+ * (its handler replaces the context - the window dies with it). */
+async function handlePendingOpeningBalance(user, rawText, trace) {
+  const pending = user.state_context?.pendingOpeningBalance;
+  if (!pending || typeof pending !== 'object') return null;
+
+  // The post-create hint (walletId, no amount) is NOT a question: it is
+  // consumed by runWalletOpeningBalance when "saldo awal X" arrives, or
+  // replaced wholesale by the next store - either way TTL-bounded. Nothing
+  // to claim here.
+  if (typeof pending.amount !== 'number') return null;
+
+  if (contextDomain.isContextExpired(pending.expiresAt)) {
+    trace.openingContext = 'expired';
+    return null; // treated as absent from here on
+  }
+
+  const intent = detectIntent(rawText);
+  if (intent !== 'unclear') return null;
+
+  const candidate = extractEndpointAnswerCandidate(rawText);
+
+  let wallets;
+  try {
+    wallets = await walletsDomain.listActiveWallets(user.id);
+  } catch (error) {
+    trace.walletReadError = error?.message ?? String(error);
+    return {
+      reply: WALLET_READ_DEGRADED_REPLY,
+      newState: STATES.IDLE,
+      // Keep the window: the DB failure must not consume the user's answer
+      // turn (T-10 keeps degraded fail-open for WRITES; this is a read).
+      newStateContext: { pendingOpeningBalance: pending },
+    };
+  }
+
+  const target = candidate ? matchWalletForRead(wallets, candidate) : null;
+  if (!target) {
+    trace.openingAnswer = candidate ? 'unknown_wallet' : 'no_name';
+    return {
+      reply: buildOpeningAskReply(wallets),
+      newState: STATES.IDLE,
+      newStateContext: { pendingOpeningBalance: pending },
+    };
+  }
+
+  trace.openingAnswer = 'claimed';
+  return applyOpeningBalance(user, target, pending.amount, trace);
+}
+
 async function handleIdle(user, rawText, trace) {
+  // V2 Phase 3: an unfinished clarification gets first pick - but only its
+  // own answer shape is claimed, inside its TTL'd window (QA note 1).
+  // Anything else falls through to the narrowing gates below, where a
+  // fresh store replaces state_context wholesale (window dies, nothing
+  // dangles).
+  const transferPending = await handlePendingTransfer(user, rawText, trace);
+  if (transferPending) {
+    trace.intent ||= 'transfer_pending';
+    return transferPending;
+  }
+
+  const openingPending = await handlePendingOpeningBalance(user, rawText, trace);
+  if (openingPending) {
+    trace.intent ||= 'opening_balance_pending';
+    return openingPending;
+  }
+
   // Phase 2 (Priority 6): a follow-up that narrows the scoped recap on
   // screen is answered against THAT scope first - it needs the stored
   // context, so it must run before the intent is resolved from scratch.
@@ -5644,8 +6590,10 @@ async function handleAwaitingDirection(user, rawText, trace) {
   // AWAITING_DIRECTION (every future message re-triggers the same crash).
   // Found via real WhatsApp testing, not caught by local pipeline testing.
   // Fail gracefully instead: ask the user to resend, and reset to IDLE so
-  // they aren't stuck.
-  const hasValidAmount = typeof pending.amount === 'number' && !Number.isNaN(pending.amount);
+  // they aren't stuck. V2 G9: a zero/negative amount fails the same way -
+  // it is garbage, never a real transaction (GC-1).
+  const hasValidAmount =
+    typeof pending.amount === 'number' && Number.isFinite(pending.amount) && pending.amount > 0;
   if (!hasValidAmount) {
     trace.error = 'missing_amount_in_pending_extraction';
     return {

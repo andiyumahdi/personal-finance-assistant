@@ -20,6 +20,8 @@ import * as goalQueries from '../../src/db/queries/goals.js';
 import * as messageLogQueries from '../../src/db/queries/messageLog.js';
 import * as pendingContextQueries from '../../src/db/queries/pendingContext.js';
 import * as transactionsDomain from '../../src/domain/transactions.js';
+import * as walletQueries from '../../src/db/queries/wallets.js';
+import { computeWalletDetails } from '../../src/domain/wallets.js';
 
 const testPhoneNumber = `TEST-${Date.now()}`;
 let testUserId;
@@ -436,4 +438,75 @@ describe('goals query layer', () => {
     const found = goals.some((g) => g.id === goalId);
     assert.equal(found, true);
   });
+});
+
+// V2 Phase 3 (UX contract W-3 / W-9, DEC-2): the opening-balance stack
+// proven against the REAL migrated schema (migration 20261005090000), not
+// the fake client the unit/v2 suites use. W-3 = "saldo awal" lands on
+// wallets.opening_balance; W-9 = every balance read is a fresh backend
+// computation opening_balance +/- transactions +/- transfers.
+describe('W-3/W-9: opening balance on the real migrated schema', () => {
+  let walletId;
+
+  test('a fresh wallet row defaults opening_balance to 0 (schema default)', async () => {
+    const wallet = await walletQueries.insertUserWallet(testUserId, 'BSI', 'bank');
+    walletId = wallet.id;
+    assert.equal(wallet.opening_balance === null || Number(wallet.opening_balance) === 0, true,
+      `expected default 0, got ${wallet.opening_balance}`);
+  });
+
+  test('W-3: setUserWalletOpeningBalance round-trips 500000 through the real column', async () => {
+    const updated = await walletQueries.setUserWalletOpeningBalance(walletId, testUserId, 500000);
+    assert.ok(updated, 'owner update must return the row');
+    assert.equal(Number(updated.opening_balance), 500000);
+
+    const reread = await walletQueries.getUserWalletById(walletId, testUserId);
+    assert.equal(Number(reread.opening_balance), 500000, 'read-back sees the written value');
+  });
+
+  test('W-3 ownership: another user cannot write the opening balance (null, value untouched)', async () => {
+    const updated = await walletQueries.setUserWalletOpeningBalance(walletId, '00000000-0000-0000-0000-000000000000', 999999);
+    assert.equal(updated, null, 'foreign userId must not match any row');
+    const reread = await walletQueries.getUserWalletById(walletId, testUserId);
+    assert.equal(Number(reread.opening_balance), 500000, "owner's value untouched");
+  });
+
+  test('W-9: balance = opening + income - expense - transfer out, computed fresh from real rows', async () => {
+    await transactionQueries.insertTransaction({
+      user_id: testUserId, type: 'income', amount: 300000, category: 'Gaji',
+      raw_text: 'gaji 300rb', source_message_id: `TEST-W9-INC-${Date.now()}`, wallet_id: walletId,
+    });
+    await transactionQueries.insertTransaction({
+      user_id: testUserId, type: 'expense', amount: 50000, category: 'Makanan & Minuman',
+      raw_text: 'makan 50rb', source_message_id: `TEST-W9-EXP-${Date.now()}`, wallet_id: walletId,
+    });
+    const dest = await walletQueries.insertUserWallet(testUserId, 'OVO', 'e_wallet');
+    await transactionQueries.insertTransaction({
+      user_id: testUserId, type: 'transfer', amount: 100000, category: 'Transfer',
+      raw_text: 'pindah 100rb', source_message_id: `TEST-W9-TRF-${Date.now()}`,
+      wallet_id: walletId, to_wallet_id: dest.id,
+    });
+
+    const wallets = await walletQueries.listUserWallets(testUserId);
+    const facts = await walletQueries.listTransactionFactsForUser(testUserId);
+    const details = computeWalletDetails(wallets, facts);
+
+    // 500000 opening + 300000 income - 50000 expense - 100000 transfer out
+    assert.equal(details.get(walletId).balance, 650000,
+      `got ${details.get(walletId).balance}`);
+    // destination: 0 opening + 100000 transfer in
+    assert.equal(details.get(dest.id).balance, 100000, `got ${details.get(dest.id).balance}`);
+  });
+
+  test('W-9 is fresh: re-reading after another write reflects it immediately (no cache)', async () => {
+    await walletQueries.setUserWalletOpeningBalance(walletId, testUserId, 600000);
+    const wallets = await walletQueries.listUserWallets(testUserId);
+    const facts = await walletQueries.listTransactionFactsForUser(testUserId);
+    const details = computeWalletDetails(wallets, facts);
+    assert.equal(details.get(walletId).balance, 750000, `got ${details.get(walletId).balance}`);
+  });
+  // Cleanup: the file-level `after` deletes transactions FIRST, then the
+  // user row - wallets.user_id is ON DELETE CASCADE, so the wallet rows
+  // (and any transaction FKs pointing at them) are torn down in the only
+  // order that satisfies the foreign keys. No local hook needed.
 });

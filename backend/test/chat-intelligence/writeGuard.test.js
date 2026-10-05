@@ -106,7 +106,9 @@ describe('Priority 3: statements still write (validated behavior)', () => {
     assert.equal(wallets().length, 1);
     assert.equal(wallets()[0].name, 'BRI');
     assert.equal(wallets()[0].user_id, USER_A);
-    assert.match(trace.reply, /udah kubikin/);
+    // §41 (V2 Phase 4, UX contract W-2): OLD `/udah kubikin/` -> NEW pinned
+    // create copy (Rp0 statement + saldo-awal hand-off). See sprintD2Flows §41.
+    assert.match(trace.reply, /✅ Wallet BRI berhasil dibuat\. Saldo awal: Rp0\./);
     assert.equal(trace.dbAction.type, 'insert_wallet');
     assert.equal(trace.stateAfter, 'IDLE');
   });

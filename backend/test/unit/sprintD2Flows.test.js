@@ -152,8 +152,13 @@ describe('D2 flow: create wallet', () => {
   test('valid name creates the row immediately (no confirmation), default type', async () => {
     const trace = await handleIncomingMessage(PHONE_A, 'tambah dompet BCA Debit');
 
-    assert.match(trace.reply, /"BCA Debit"/);
-    assert.match(trace.reply, /kubikin/);
+    // §41 (V2 Phase 4, UX contract W-2): OLD `Oke, dompet "BCA Debit" udah kubikin 👍`
+    // -> NEW pinned copy `✅ Wallet BCA Debit berhasil dibuat. Saldo awal: Rp0.`
+    //    + the W-3 Journey B hand-off line. WHY: brief §8 Create + contract W-2
+    //    demand the created state (Rp0) be stated and the saldo-awal follow-up
+    //    offered, not a bare acknowledgement. TEST: this assertion.
+    assert.match(trace.reply, /✅ Wallet BCA Debit berhasil dibuat\. Saldo awal: Rp0\./);
+    assert.match(trace.reply, /Mau isi saldo awal sekarang\?/);
     const row = walletsOf('user-a').find((w) => w.name === 'BCA Debit');
     assert.ok(row, 'row inserted');
     assert.equal(row.user_id, 'user-a');
@@ -164,14 +169,25 @@ describe('D2 flow: create wallet', () => {
 
   test('duplicate against own wallet is rejected case-insensitively', async () => {
     const trace = await handleIncomingMessage(PHONE_A, 'buat dompet bri');
-    assert.match(trace.reply, /Udah ada dompet/);
+    // §41 (V2 Phase 4, UX contract W-5): OLD `Udah ada dompet "bri" nih. Coba
+    // nama lain ya.` -> NEW brief §8 Existing copy that ALSO reports the
+    // existing wallet's CURRENT balance (echoing the STORED casing 'BRI' -
+    // proof the dup check stayed case-insensitive, asserted by "no row added").
+    // WHY: W-5 "duplicate reply that INCLUDES current balance ... never silent".
+    assert.match(trace.reply, /Wallet BRI ternyata udah ada\. Saldo sekarang -?Rp/);
+    assert.match(
+      trace.reply,
+      /Kalau maksud lo mau bikin wallet lain, kasih nama wallet-nya aja\./,
+    );
     assert.equal(walletsOf('user-a').length, 5, 'no row added');
     assert.equal(userRow('user-a').state, STATES.IDLE);
   });
 
   test('duplicate against the DEFAULT wallet name (default is a row - plain duplicate)', async () => {
     const trace = await handleIncomingMessage(PHONE_A, 'buat dompet dompet utama');
-    assert.match(trace.reply, /Udah ada dompet/);
+    // §41 (V2 Phase 4, W-5): same copy upgrade as above; the default wallet
+    // stays a plain duplicate (no special status) per the D2 decision.
+    assert.match(trace.reply, /Wallet Dompet Utama ternyata udah ada\. Saldo sekarang -?Rp/);
     assert.equal(walletsOf('user-a').length, 5);
   });
 
