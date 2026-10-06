@@ -108,7 +108,22 @@ export function TransactionsTable({
           id: 'transaction-delete',
           duration: 8000, // U-4/U-5: 8s auto-dismiss, no background restore (U-5)
           // U-4: >=40px touch target for the action (inline style beats UA/CSS)
-          actionButtonStyle: { minHeight: 40, padding: '0 16px' },
+          // Phase 10 UI polish (user-approved): Undo renders as an underlined
+          // text action (reference toast style) instead of the solid primary
+          // block from the global classNames - the >=40px target, the native
+          // <button>, the 8s duration and the copy are all unchanged.
+          actionButtonStyle: {
+            minHeight: 40,
+            padding: '0 16px',
+            background: 'transparent',
+            border: 'none',
+            boxShadow: 'none',
+            color: 'inherit',
+            textDecoration: 'underline',
+            textUnderlineOffset: '3px',
+            fontWeight: 500,
+            cursor: 'pointer',
+          },
           action: {
             label: 'Undo',
             onClick: async () => {
