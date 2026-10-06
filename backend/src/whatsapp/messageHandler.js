@@ -1465,6 +1465,11 @@ const CRITERIA_NOISE_WORDS = new Set([
   'semua', 'dari', 'ke', 'di', 'dan', 'sama', 'untuk', 'buat', 'bisa', 'mau',
   'nominal', 'jumlah', 'kategori', 'rupiah', 'tolong', 'mohon',
   'hapus', 'buang', 'ubah', 'edit', 'rubah', 'ganti', 'jadi', 'jadiin', 'menjadi',
+  // Phase 10 (live delete-loop finding): "yang 65rb itu" extracted the
+  // keyword "itu", ANDing the amount search into zero hits, so the delete
+  // flow re-asked the identical target question forever. Anaphoric
+  // fillers are noise, not search terms.
+  'itu',
 ]);
 
 const MONEY_UNIT_PATTERN = /\b(\d[\d.,]*)\s*(rb|ribu|rebu|k|jt|juta)\b/;
@@ -1576,9 +1581,9 @@ export function parseCandidateIndex(text) {
   return Number.isInteger(index) && index >= 1 ? index : null;
 }
 
-/** True when a message looks like "which one?" material rather than chat: starts with "yang", "nomor", or a number. */
+/** True when a message looks like "which one?" material rather than chat: starts with "yang" (incl. the "yg" abbreviation parseRecapNarrowing already accepts), "nomor", or a number. */
 export function looksLikeTargetReply(rawText) {
-  return /^(yang|nomor|no\b|\d)/i.test(String(rawText ?? '').trim());
+  return /^(yang|yg|nomor|no\b|\d)/i.test(String(rawText ?? '').trim());
 }
 
 // ---------------------------------------------------------------------------

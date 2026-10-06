@@ -68,6 +68,13 @@ describe('parseTransactionCriteria (pure)', () => {
     assert.deepEqual(parseTransactionCriteria('cari transaksi kemarin').keyword, undefined);
   });
 
+  test('anaphoric filler "itu" is noise: "yang 65rb itu" keeps the amount, drops the keyword (Phase 10 delete-loop fix)', () => {
+    // Live finding: keyword "itu" ANDed the amount search into zero hits,
+    // so the delete flow re-asked the identical target question forever.
+    assert.deepEqual(parseTransactionCriteria('yang 65rb itu'), { amount: 65000 });
+    assert.deepEqual(parseTransactionCriteria('hapus yang 50rb itu'), { amount: 50000 });
+  });
+
   test('supports "kemarin" and "hari ini" date windows', () => {
     const yesterday = parseTransactionCriteria('cari transaksi kemarin');
     assert.equal(yesterday.dateLabel, 'kemarin');
@@ -186,6 +193,9 @@ describe('candidate selection helpers (pure)', () => {
     assert.equal(looksLikeTargetReply('yang 25rb'), true);
     assert.equal(looksLikeTargetReply('2'), true);
     assert.equal(looksLikeTargetReply('nomor 2'), true);
+    // Phase 10: the "yg" abbreviation keeps delete context (it used to
+    // hand back to the router and lose the pending flow -> unclear fallback).
+    assert.equal(looksLikeTargetReply('yg kategori transfer'), true);
     assert.equal(looksLikeTargetReply('jajan 20rb'), false);
     assert.equal(looksLikeTargetReply('rekap dong'), false);
   });
