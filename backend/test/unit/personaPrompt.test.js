@@ -20,11 +20,13 @@ import {
 } from '../../src/ai/personaPrompt.js';
 
 describe('PERSONA_PROMPT_VERSION (SPECIFICATION.md section 12.3)', () => {
-  test('pinned to the Phase 2 structured-but-adaptive recap version', () => {
-    // v2026-10-03: the recap packet gained period/filter/breakdown/
-    // transactions/budgets, so the instruction content changed and the
-    // version bumped with it (v2026-10-02 was the Sprint E report shape).
-    assert.equal(PERSONA_PROMPT_VERSION, 'v2026-10-03');
+  test('bumped to the Phase 10 recap-hardening version', () => {
+    // v2026-10-06: the bullet cap vs the transfer line conflicted (live
+    // reply dropped the Pindah dompet bullet) and a generic heading left
+    // scopes unlabeled - content changed, so the version bumped with it
+    // (v2026-10-03 was the Phase 2 structured-but-adaptive recap,
+    // v2026-10-02 the Sprint E report shape).
+    assert.equal(PERSONA_PROMPT_VERSION, 'v2026-10-06');
   });
 });
 
@@ -96,6 +98,18 @@ describe('Phase 2: structured but adaptive recap facts (Chat Intelligence Priori
   test('still never computes, and every other intent keeps its plain shape', () => {
     assert.match(PERSONA_SYSTEM_INSTRUCTION, /Every intent EXCEPT "insight" stays one or two short natural sentences/);
     assert.match(PERSONA_SYSTEM_INSTRUCTION, /never do arithmetic of your own/);
+  });
+});
+
+describe('Phase 10: the bullet cap never beats the transfer line, scopes are always labeled (live product-test findings)', () => {
+  test('the Pindah dompet line survives the 5-bullet cap', () => {
+    assert.match(PERSONA_SYSTEM_INSTRUCTION, /the Pindah dompet line is part of the report too/);
+    assert.match(PERSONA_SYSTEM_INSTRUCTION, /never drop it to stay within the limit/);
+  });
+
+  test('all-time totals and month-scoped figures are always scope-labeled', () => {
+    assert.match(PERSONA_SYSTEM_INSTRUCTION, /the totals are ALL-TIME/);
+    assert.match(PERSONA_SYSTEM_INSTRUCTION, /never sit next to each other unlabeled/);
   });
 });
 

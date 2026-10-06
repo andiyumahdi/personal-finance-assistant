@@ -13,7 +13,9 @@
 //     isGoalStartRequest gate) - the 13-state LIST was already pinned by
 //     the sprintCRouting/sprintD* state locks, the FLOW was not;
 //   - persona step (5): the insight recap order includes the transfer
-//     line (v2026-10-03 intentionally NOT bumped - see C28).
+//     line (v2026-10-03 intentionally NOT bumped - see C28; bumped later
+//     to v2026-10-06 by the Phase 10 C33 persona change - the step-(5)
+//     wording itself is unchanged, so this pin still holds as written).
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
