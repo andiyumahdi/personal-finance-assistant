@@ -5,7 +5,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { LifeBuoy, LogOut, Settings, User } from 'lucide-react';
+import { LogOut, Settings, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSession, signOut } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
@@ -77,10 +77,9 @@ export function UserMenu() {
             <Settings className="h-4 w-4" />
             Settings
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => window.open('https://docs.lovable.dev', '_blank', 'noopener')}>
-            <LifeBuoy className="h-4 w-4" />
-            Help
-          </DropdownMenuItem>
+          {/* V2 Phase 7 (D-3, gap G13): the Lovable-scaffold "Help" menu item
+              was removed - D-3 pins ZERO Lovable-docs references in the
+              frontend, and there is no Nera help URL to retarget it to. */}
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={() => setConfirmOpen(true)} className="text-destructive focus:text-destructive">
             <LogOut className="h-4 w-4" />

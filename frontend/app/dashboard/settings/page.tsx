@@ -21,6 +21,10 @@
 // - Billing: DROPPED entirely - this is a free personal project for a
 //   handful of friends, not a paid product; a fake "$12/month" plan
 //   would be actively misleading.
+//
+// V2 Phase 8 (M-4): every interactive icon button (category rename/
+// delete, wallet rename/archive/delete) is >=40x40 CSS px below the md
+// breakpoint and keeps its original compact 32px size on desktop.
 
 import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
@@ -329,7 +333,7 @@ function CategoriesGroup() {
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="h-8 w-8"
+                        className="h-10 w-10 md:h-8 md:w-8"
                         title={`Rename ${entry.name}`}
                         onClick={() => startRename(entry)}
                         disabled={busy}
@@ -339,7 +343,7 @@ function CategoriesGroup() {
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        className="h-10 w-10 md:h-8 md:w-8 text-destructive hover:text-destructive"
                         title={
                           blocked
                             ? `Can't delete - ${blockerLabel}`
@@ -700,7 +704,7 @@ function WalletsGroup() {
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="h-8 w-8"
+                        className="h-10 w-10 md:h-8 md:w-8"
                         title={`Rename ${entry.name}`}
                         onClick={() => startRename(entry)}
                         disabled={busy}
@@ -711,7 +715,7 @@ function WalletsGroup() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="h-8 w-8"
+                          className="h-10 w-10 md:h-8 md:w-8"
                           title={
                             entry.archived_at
                               ? `Restore ${entry.name}`
@@ -731,7 +735,7 @@ function WalletsGroup() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
+                          className="h-10 w-10 md:h-8 md:w-8 text-destructive hover:text-destructive"
                           title={
                             count > 0
                               ? `Can't delete - referenced by ${count} transaction${count === 1 ? '' : 's'}`

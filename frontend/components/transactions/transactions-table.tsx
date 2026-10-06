@@ -21,7 +21,7 @@
 // the chat "undo" pointer is updated server-side, so the confirmation
 // copy can honestly promise restoration.
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { Loader2, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -95,28 +95,71 @@ export function TransactionsTable({
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         if (res.status === 404) {
-          toast.error('That transaction is no longer active');
+          toast.error('Transaksi tidak lagi aktif');
         } else {
-          throw new Error(data?.error ?? 'Failed to delete transaction');
+          throw new Error(data?.error ?? 'Gagal menghapus transaksi');
         }
       } else {
-        toast.success('Transaction deleted - type "undo" in chat to restore');
+        // U-1/U-2: Indonesian snackbar with clickable Undo action (sonner action)
+        // Stable toast ID so Delete A → Delete B replaces the same snackbar (U-6).
+        // No chat/WhatsApp mentions anywhere (U-10/D-3).
+        const deletedId = deleting.id;
+        toast.success('✓ Transaksi dihapus', {
+          id: 'transaction-delete',
+          duration: 8000, // U-4/U-5: 8s auto-dismiss, no background restore (U-5)
+          // U-4: >=40px touch target for the action (inline style beats UA/CSS)
+          actionButtonStyle: { minHeight: 40, padding: '0 16px' },
+          action: {
+            label: 'Undo',
+            onClick: async () => {
+              const restoreRes = await fetch(`/api/transactions/${deletedId}/restore`, {
+                method: 'POST',
+              });
+              if (restoreRes.ok) {
+                toast.dismiss('transaction-delete');
+                // Shared id (U-8): a double-click's second result REPLACES
+                // the first instead of stacking two contradictory toasts.
+                toast.success('✓ Transaksi dikembalikan', { id: 'transaction-restore' }); // U-2
+                onChanged();
+                return;
+              }
+              if (restoreRes.status === 404) {
+                // U-8: second Undo / already restored / row gone -> NEUTRAL
+                // no-op feedback (not an error, not a silent nothing).
+                toast.dismiss('transaction-delete');
+                toast.info('Tidak ada yang perlu dikembalikan', { id: 'transaction-restore' });
+                return;
+              }
+              // U-11/§32: honest failure copy, internals stay in the server
+              // log - the row remains deleted and we do not fake success.
+              toast.error('Gagal mengembalikan transaksi. Coba lagi.', {
+                id: 'transaction-restore',
+              });
+            },
+          },
+        });
       }
       onChanged();
       setDeleting(null);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete transaction');
+      toast.error(err instanceof Error ? err.message : 'Gagal menghapus transaksi');
     } finally {
       setDeleteBusy(false);
     }
   };
 
+  // V2 Phase 8 (M-4, gap G13): >=40x40 CSS px touch targets on mobile -
+  // these actions render in BOTH the md+ table row and the <md card
+  // (`md:hidden`), so the size flips at the same md breakpoint the two
+  // layouts use: 40px on phones, the original 28px on desktop (no
+  // desktop visual change). gap widens on mobile so two adjacent
+  // 40px targets stay separately tappable.
   const rowActions = (t: Transaction) => (
-    <div className="flex items-center justify-end gap-0.5">
+    <div className="flex items-center justify-end gap-1 md:gap-0.5">
       <Button
         variant="ghost"
         size="icon"
-        className="h-7 w-7"
+        className="h-10 w-10 md:h-7 md:w-7"
         aria-label="Edit transaction"
         title="Edit"
         onClick={() => setEditing(t)}
@@ -126,7 +169,7 @@ export function TransactionsTable({
       <Button
         variant="ghost"
         size="icon"
-        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+        className="h-10 w-10 md:h-7 md:w-7 text-muted-foreground hover:text-destructive"
         aria-label="Delete transaction"
         title="Delete"
         onClick={() => setDeleting(t)}
@@ -247,8 +290,8 @@ export function TransactionsTable({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this transaction?</AlertDialogTitle>
             <AlertDialogDescription>
-              {deleting ? `“${deleting.raw_text}”` : 'This transaction'} will be removed from your
-              list. Changed your mind? Type “undo” in the chat right after to restore it.
+              {deleting ? `“${deleting.raw_text}”` : 'Transaksi ini'} akan dihapus dari daftar.
+              Klik Undo di notifikasi yang muncul untuk mengembalikan.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

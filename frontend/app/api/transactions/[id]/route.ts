@@ -190,11 +190,14 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   // not some older chat-deleted one. Best-effort AFTER the delete - the
   // delete itself succeeded, so a pointer hiccup never turns into a 500
   // for an operation that already happened.
+  // V2 Phase 7 (C1/U-9, gap G1): the users table's key column is `id`,
+  // NOT `user_id` - filtering on the nonexistent column made this update
+  // a silent no-op, so chat "undo" never saw dashboard deletions.
   try {
     const { error: pointerError } = await supabase
       .from('users')
       .update({ last_deleted_transaction_id: removed.id })
-      .eq('user_id', session.user.id);
+      .eq('id', session.user.id);
     if (pointerError) {
       console.error('undo pointer update failed after dashboard delete', {
         id: removed.id,

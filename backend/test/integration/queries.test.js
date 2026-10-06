@@ -326,6 +326,131 @@ describe('Sprint C: undo pointer (migration-gated)', () => {
     const afterUser = await userQueries.getUserByPhone(testPhoneNumber);
     assert.equal(afterUser.last_deleted_transaction_id, null, 'bad pointer cleared');
   });
+
+  // U-9: Cross-channel test - dashboard delete sets pointer, chat undo restores it
+  test('U-9: dashboard delete sets pointer; chat undo restores the row', async (t) => {
+    if (!(await migrationApplied())) {
+      return t.skip('BLOCKED: migration 20260930090000 not applied (column missing)');
+    }
+
+    // Insert a transaction via the domain (simulating dashboard delete)
+    const tx = await transactionQueries.insertTransaction({
+      user_id: testUserId,
+      type: 'expense',
+      amount: 12345,
+      category: 'Lainnya',
+      raw_text: 'TEST U-9 cross-channel delete',
+      source_message_id: `TEST-U9-${Date.now()}`,
+    });
+    pointerTxId = tx.id;
+
+    // Simulate dashboard DELETE: soft delete + set pointer (exactly what the API does)
+    const deleted = await transactionQueries.softDeleteTransactionById(tx.id, testUserId);
+    assert.ok(deleted, 'delete must succeed');
+    assert.ok(deleted.deleted_at, 'row must be soft-deleted');
+
+    await userQueries.updateUserById(testUserId, {
+      last_deleted_transaction_id: tx.id,
+    });
+
+    // Verify pointer is set
+    const freshUser = await userQueries.getUserByPhone(testPhoneNumber);
+    assert.equal(freshUser.last_deleted_transaction_id, tx.id);
+
+    // Now chat undo restores it (via transactionsDomain.restoreLastDeletedTransaction)
+    const restored = await transactionsDomain.restoreLastDeletedTransaction(freshUser);
+    assert.equal(restored.outcome, 'restored', 'chat undo must restore dashboard-deleted row');
+    assert.equal(restored.transaction.deleted_at, null);
+    assert.equal(restored.transaction.id, tx.id, 'same row restored, not a duplicate');
+
+    // Pointer must be cleared
+    const afterUser = await userQueries.getUserByPhone(testPhoneNumber);
+    assert.equal(afterUser.last_deleted_transaction_id, null, 'pointer cleared after cross-channel undo');
+
+    // Verify no duplicate row was created
+    const allTx = await transactionQueries.listTransactions(testUserId, { includeDeleted: true });
+    const matching = allTx.filter((tx) => tx.raw_text === 'TEST U-9 cross-channel delete');
+    assert.equal(matching.length, 1, 'exactly one row exists - no duplicate created');
+    assert.equal(matching[0].deleted_at, null);
+  });
+
+  // U-2/U-8/U-11: Restore endpoint safety tests
+  test('restore: already-active row returns not_found (idempotent, U-2/U-8)', async (t) => {
+    if (!(await migrationApplied())) {
+      return t.skip('BLOCKED: migration 20260930090000 not applied (column missing)');
+    }
+
+    const tx = await transactionQueries.insertTransaction({
+      user_id: testUserId,
+      type: 'expense',
+      amount: 555,
+      category: 'Lainnya',
+      raw_text: 'TEST restore idempotent',
+      source_message_id: `TEST-REST-IDEMP-${Date.now()}`,
+    });
+
+    // Try to restore an already-active row
+    const result = await transactionQueries.restoreTransactionById(tx.id, testUserId);
+    assert.equal(result, null, 'already-active row must return null (not found for restore)');
+
+    // Second call must also return null
+    const result2 = await transactionQueries.restoreTransactionById(tx.id, testUserId);
+    assert.equal(result2, null);
+  });
+
+  test('restore: unknown id returns not_found (no enumeration, U-3)', async (t) => {
+    const fakeId = '00000000-0000-0000-0000-000000000000';
+    const result = await transactionQueries.restoreTransactionById(fakeId, testUserId);
+    assert.equal(result, null, 'unknown id must return null');
+  });
+
+  test('restore: foreign id returns not_found (no enumeration, U-3/U-13)', async (t) => {
+    const foreign = await userQueries.createUser(`TEST-REST-F-${Date.now()}`);
+    const foreignTx = await transactionQueries.insertTransaction({
+      user_id: foreign.id,
+      type: 'expense',
+      amount: 777,
+      category: 'Lainnya',
+      raw_text: 'TEST foreign restore',
+      source_message_id: `TEST-REST-F-${Date.now()}`,
+    });
+    await transactionQueries.softDeleteTransactionById(foreignTx.id, foreign.id);
+
+    const result = await transactionQueries.restoreTransactionById(foreignTx.id, testUserId);
+    assert.equal(result, null, 'foreign id must return null');
+
+    // Foreign row must still be deleted
+    const row = await transactionQueries.getTransactionById(foreignTx.id, foreign.id);
+    assert.ok(row.deleted_at);
+  });
+
+  test('restore: double-click safe (second call returns null, U-2/U-8)', async (t) => {
+    if (!(await migrationApplied())) {
+      return t.skip('BLOCKED: migration 20260930090000 not applied (column missing)');
+    }
+
+    const tx = await transactionQueries.insertTransaction({
+      user_id: testUserId,
+      type: 'expense',
+      amount: 888,
+      category: 'Lainnya',
+      raw_text: 'TEST restore double click',
+      source_message_id: `TEST-REST-DBL-${Date.now()}`,
+    });
+    await transactionQueries.softDeleteTransactionById(tx.id, testUserId);
+
+    const first = await transactionQueries.restoreTransactionById(tx.id, testUserId);
+    assert.ok(first, 'first restore must succeed');
+    assert.equal(first.deleted_at, null);
+
+    // Second call (simulating double-click) must return null
+    const second = await transactionQueries.restoreTransactionById(tx.id, testUserId);
+    assert.equal(second, null, 'second call must return null - already active');
+
+    // Row must still be active (not re-deleted or corrupted)
+    const row = await transactionQueries.getTransactionById(tx.id, testUserId);
+    assert.equal(row.deleted_at, null);
+  });
 });
 
 describe('message_log query layer (dedupe guard)', () => {
