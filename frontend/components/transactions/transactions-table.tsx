@@ -107,21 +107,24 @@ export function TransactionsTable({
         toast.success('✓ Transaksi dihapus', {
           id: 'transaction-delete',
           duration: 8000, // U-4/U-5: 8s auto-dismiss, no background restore (U-5)
-          // U-4: >=40px touch target for the action (inline style beats UA/CSS)
-          // Phase 10 UI polish (user-approved): Undo renders as an underlined
-          // text action (reference toast style) instead of the solid primary
-          // block from the global classNames - the >=40px target, the native
-          // <button>, the 8s duration and the copy are all unchanged.
+          // U-4: >=40px touch target for the action (inline style beats UA/CSS).
+          // Phase 10 UI (user-approved, C34): Undo reads as the toast's
+          // PRIMARY ACTION - a solid theme pill (var(--primary), light/dark
+          // aware). Written INLINE because sonner's default [data-button]
+          // sheet is unlayered (24px/12px/4px-radius block) and beats the
+          // global tailwind classNames; the C31 underlined-text look is
+          // replaced per user review ("looked like part of the message").
+          // The focus-visible ring is left to sonner (keyboard UX).
+          // >=40px target, native <button>, 8s duration, stable toast ids
+          // and ALL copy unchanged.
           actionButtonStyle: {
             minHeight: 40,
             padding: '0 16px',
-            background: 'transparent',
-            border: 'none',
-            boxShadow: 'none',
-            color: 'inherit',
-            textDecoration: 'underline',
-            textUnderlineOffset: '3px',
-            fontWeight: 500,
+            borderRadius: 999,
+            background: 'var(--primary)',
+            color: 'var(--primary-foreground)',
+            fontSize: 14,
+            fontWeight: 600,
             cursor: 'pointer',
           },
           action: {
